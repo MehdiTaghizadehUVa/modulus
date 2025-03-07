@@ -448,3 +448,4 @@ class MeshGraphEdgeMLPSum(nn.Module):
         if self.recompute_activation:
             return self.custom_silu_linear_forward(efeat, nfeat, graph)
         return self.default_forward(efeat, nfeat, graph)
+

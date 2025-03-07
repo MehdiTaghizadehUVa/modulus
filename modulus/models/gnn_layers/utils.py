@@ -425,3 +425,4 @@ def aggregate_and_concat(
         cat_feat = agg_concat_dgl(efeat, nfeat, graph, aggregation)
 
     return cat_feat
+

@@ -15,7 +15,7 @@
 # limitations under the License.
 
 from dataclasses import dataclass
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Union
 
 from dgl import DGLGraph
 from torch import Tensor
@@ -95,7 +95,7 @@ class BiStrideMeshGraphNet(MeshGraphNet):
         input_dim_edges: int,
         output_dim: int,
         processor_size: int = 15,
-        mlp_activation_fn: str | List[str] = "relu",
+        mlp_activation_fn: Union[str, List[str]] = "relu",
         num_layers_node_processor: int = 2,
         num_layers_edge_processor: int = 2,
         num_mesh_levels: int = 2,
