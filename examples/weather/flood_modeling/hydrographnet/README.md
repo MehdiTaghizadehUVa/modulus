@@ -69,7 +69,7 @@ To perform autoregressive rollout and generate evaluation animations:
     - RMSE over time
 
 <p align="center">
-  <img src="./outputs/animations/sample_animation.gif" alt="Flood Forecasting Animation" width="600"/>
+  <img src="../../../../docs/img/hydrographnet.gif" alt="Flood Forecasting Animation" width="600"/>
 </p>
 
 ## Dataset Loading

@@ -837,29 +837,3 @@ class HydroGraphDataset(DGLDataset):
         relative_coords = (relative_coords - np.mean(relative_coords, axis=0)) / (np.std(relative_coords, axis=0) + epsilon)
         distance = (distance - np.mean(distance)) / (np.std(distance) + epsilon)
         return np.hstack([relative_coords, distance[:, None]])
-
-    def save_processed_data(self, save_path: str) -> None:
-        """
-        Save processed static and dynamic data along with sample indices to a pickle file.
-
-        Args:
-            save_path (str): Path to save the processed data.
-        """
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        with open(save_path, 'wb') as f:
-            pickle.dump((self.static_data, self.dynamic_data, self.sample_index), f)
-
-    @staticmethod
-    def load_processed_data(load_path: str):
-        """
-        Load processed data from a pickle file.
-
-        Args:
-            load_path (str): Path of the pickle file.
-
-        Returns:
-            Tuple: (static_data, dynamic_data, sample_index)
-        """
-        with open(load_path, 'rb') as f:
-            static_data, dynamic_data, sample_index = pickle.load(f)
-        return static_data, dynamic_data, sample_index
