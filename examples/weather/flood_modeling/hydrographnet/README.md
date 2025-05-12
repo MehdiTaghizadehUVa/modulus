@@ -113,10 +113,16 @@ If you use HydroGraphNet in your research, please cite:
 
 ```bibtex
 @article{taghizadeh2025hydrographnet,
-  title={Interpretable Physics-Informed Graph Neural Networks for Flood Forecasting},
-  author={Taghizadeh, Mehdi and Zandsalimi, Zanko and Nabian, Mohammad Amin and Shafiee-Jood, Majid and Alemazkoor, Negin},
-  journal={Computer-Aided Civil and Infrastructure Engineering},
-  year={2025}
+  title     = {Interpretable Physics-Informed Graph Neural Networks for Flood Forecasting},
+  author    = {Taghizadeh, Mehdi and Zandsalimi, Zanko and Nabian, Mohammad Amin and Shafiee-Jood, Majid and Alemazkoor, Negin},
+  journal   = {Computer-Aided Civil and Infrastructure Engineering},
+  year      = {2025},
+  volume    = {n/a},
+  number    = {n/a},
+  pages     = {1--21},
+  doi       = {10.1111/mice.13484},
+  publisher = {Wiley Periodicals LLC on behalf of the Editor},
+  url       = {https://onlinelibrary.wiley.com/doi/10.1111/mice.13484}
 }
 ```
 
