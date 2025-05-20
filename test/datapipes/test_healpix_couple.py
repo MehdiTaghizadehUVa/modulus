@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 import torch as th
-from pytest_utils import import_or_fail, nfsdata_or_fail
+from pytest_utils import import_or_fail
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
@@ -35,9 +35,8 @@ xr = pytest.importorskip("xarray")
 
 
 @pytest.fixture
-def data_dir():
-    path = "/data/nfs/modulus-data/datasets/healpix/"
-    return path
+def data_dir(nfs_data_dir):
+    return nfs_data_dir.joinpath("datasets/healpix")
 
 
 @pytest.fixture
@@ -47,9 +46,8 @@ def dataset_name():
 
 
 @pytest.fixture
-def create_path():
-    path = "/data/nfs/modulus-data/datasets/healpix/merge"
-    return path
+def create_path(nfs_data_dir):
+    return nfs_data_dir.joinpath("datasets/healpix/merge")
 
 
 @dataclass
@@ -107,7 +105,6 @@ def scaling_double_dict():
 @import_or_fail("netCDF4")
 @import_or_fail("pandas")
 @import_or_fail("xarray")
-@nfsdata_or_fail
 def test_ConstantCoupler(data_dir, dataset_name, scaling_dict, pytestconfig):
 
     from physicsnemo.datapipes.healpix.couplers import (
@@ -256,9 +253,7 @@ def test_ConstantCoupler(data_dir, dataset_name, scaling_dict, pytestconfig):
 @import_or_fail("netCDF4")
 @import_or_fail("pandas")
 @import_or_fail("xarray")
-@nfsdata_or_fail
 def test_TrailingAverageCoupler(data_dir, dataset_name, scaling_dict, pytestconfig):
-
     from physicsnemo.datapipes.healpix.couplers import (
         TrailingAverageCoupler,
     )
@@ -422,7 +417,6 @@ def test_TrailingAverageCoupler(data_dir, dataset_name, scaling_dict, pytestconf
 @import_or_fail("omegaconf")
 @import_or_fail("netCDF4")
 @import_or_fail("xarray")
-@nfsdata_or_fail
 def test_CoupledTimeSeriesDataset_initialization(
     data_dir, dataset_name, scaling_dict, pytestconfig
 ):
@@ -534,7 +528,6 @@ def test_CoupledTimeSeriesDataset_initialization(
 @import_or_fail("omegaconf")
 @import_or_fail("netCDF4")
 @import_or_fail("xarray")
-@nfsdata_or_fail
 def test_CoupledTimeSeriesDataset_get_constants(
     data_dir, dataset_name, scaling_dict, pytestconfig
 ):
@@ -585,7 +578,6 @@ def test_CoupledTimeSeriesDataset_get_constants(
 @import_or_fail("omegaconf")
 @import_or_fail("netCDF4")
 @import_or_fail("xarray")
-@nfsdata_or_fail
 def test_CoupledTimeSeriesDataset_len(
     data_dir, dataset_name, scaling_dict, pytestconfig
 ):
@@ -673,7 +665,6 @@ def test_CoupledTimeSeriesDataset_len(
 @import_or_fail("omegaconf")
 @import_or_fail("netCDF4")
 @import_or_fail("xarray")
-@nfsdata_or_fail
 def test_CoupledTimeSeriesDataset_get(
     data_dir, dataset_name, scaling_double_dict, pytestconfig
 ):
@@ -849,7 +840,6 @@ def test_CoupledTimeSeriesDataset_get(
 @import_or_fail("omegaconf")
 @import_or_fail("netCDF4")
 @import_or_fail("xarray")
-@nfsdata_or_fail
 def test_CoupledTimeSeriesDataModule_initialization(
     data_dir, create_path, dataset_name, scaling_double_dict, pytestconfig
 ):
@@ -959,7 +949,6 @@ def test_CoupledTimeSeriesDataModule_initialization(
 @import_or_fail("omegaconf")
 @import_or_fail("netCDF4")
 @import_or_fail("xarray")
-@nfsdata_or_fail
 def test_CoupledTimeSeriesDataModule_get_constants(
     data_dir, create_path, dataset_name, scaling_double_dict, pytestconfig
 ):
@@ -1056,7 +1045,6 @@ def test_CoupledTimeSeriesDataModule_get_constants(
 
 
 @import_or_fail("omegaconf")
-@nfsdata_or_fail
 def test_CoupledTimeSeriesDataModule_get_dataloaders(
     data_dir, create_path, dataset_name, scaling_double_dict, pytestconfig
 ):
@@ -1134,7 +1122,6 @@ def test_CoupledTimeSeriesDataModule_get_dataloaders(
 
 
 @import_or_fail("omegaconf")
-@nfsdata_or_fail
 def test_CoupledTimeSeriesDataModule_get_coupled_vars(
     data_dir, create_path, dataset_name, scaling_double_dict, pytestconfig
 ):
@@ -1216,7 +1203,6 @@ def test_CoupledTimeSeriesDataModule_get_coupled_vars(
 @import_or_fail("omegaconf")
 @import_or_fail("netCDF4")
 @import_or_fail("xarray")
-@nfsdata_or_fail
 def test_CoupledTimeSeriesDataset_next_integration(
     data_dir, dataset_name, scaling_dict, pytestconfig
 ):
