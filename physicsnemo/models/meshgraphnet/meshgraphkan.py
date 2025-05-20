@@ -38,12 +38,12 @@ from modulus.models.gnn_layers.mesh_graph_mlp import MeshGraphMLP
 from modulus.models.gnn_layers.mesh_node_block import MeshNodeBlock
 from modulus.models.gnn_layers.utils import CuGraphCSC, set_checkpoint_fn
 from modulus.models.layers import get_activation
-from modulus.models.meta import ModelMetaData
-from modulus.models.module import Module
 
 # Import the Kolmogorov–Arnold Network layer.
 # Ensure that the file defining KolmogorovArnoldNetwork is accessible (e.g. modulus/models/gnn_layers/kan_layer.py)
 from modulus.models.layers.kan_layers import KolmogorovArnoldNetwork
+from modulus.models.meta import ModelMetaData
+from modulus.models.module import Module
 
 
 @dataclass
@@ -131,27 +131,27 @@ class MeshGraphKAN(Module):
     """
 
     def __init__(
-            self,
-            input_dim_nodes: int,
-            input_dim_edges: int,
-            output_dim: int,
-            processor_size: int = 15,
-            mlp_activation_fn: Union[str, List[str]] = "relu",
-            num_layers_node_processor: int = 2,
-            num_layers_edge_processor: int = 2,
-            hidden_dim_processor: int = 128,
-            hidden_dim_node_encoder: int = 128,
-            num_layers_node_encoder: Union[int, None] = 2,  # Ignored for KAN.
-            hidden_dim_edge_encoder: int = 128,
-            num_layers_edge_encoder: Union[int, None] = 2,
-            hidden_dim_node_decoder: int = 128,
-            num_layers_node_decoder: Union[int, None] = 2,
-            aggregation: str = "sum",
-            do_concat_trick: bool = False,
-            num_processor_checkpoint_segments: int = 0,
-            checkpoint_offloading: bool = False,
-            recompute_activation: bool = False,
-            num_harmonics: int = 5,
+        self,
+        input_dim_nodes: int,
+        input_dim_edges: int,
+        output_dim: int,
+        processor_size: int = 15,
+        mlp_activation_fn: Union[str, List[str]] = "relu",
+        num_layers_node_processor: int = 2,
+        num_layers_edge_processor: int = 2,
+        hidden_dim_processor: int = 128,
+        hidden_dim_node_encoder: int = 128,
+        num_layers_node_encoder: Union[int, None] = 2,  # Ignored for KAN.
+        hidden_dim_edge_encoder: int = 128,
+        num_layers_edge_encoder: Union[int, None] = 2,
+        hidden_dim_node_decoder: int = 128,
+        num_layers_node_decoder: Union[int, None] = 2,
+        aggregation: str = "sum",
+        do_concat_trick: bool = False,
+        num_processor_checkpoint_segments: int = 0,
+        checkpoint_offloading: bool = False,
+        recompute_activation: bool = False,
+        num_harmonics: int = 5,
     ):
         super().__init__(meta=MetaData())
 
@@ -199,11 +199,11 @@ class MeshGraphKAN(Module):
         )
 
     def forward(
-            self,
-            node_features: Tensor,
-            edge_features: Tensor,
-            graph: Union[DGLGraph, List[DGLGraph], CuGraphCSC],
-            **kwargs,
+        self,
+        node_features: Tensor,
+        edge_features: Tensor,
+        graph: Union[DGLGraph, List[DGLGraph], CuGraphCSC],
+        **kwargs,
     ) -> Tensor:
         edge_features = self.edge_encoder(edge_features)
         node_features = self.node_encoder(node_features)
@@ -216,18 +216,18 @@ class MeshGraphNetProcessor(nn.Module):
     """MeshGraphKAN processor block"""
 
     def __init__(
-            self,
-            processor_size: int = 15,
-            input_dim_node: int = 128,
-            input_dim_edge: int = 128,
-            num_layers_node: int = 2,
-            num_layers_edge: int = 2,
-            aggregation: str = "sum",
-            norm_type: str = "LayerNorm",
-            activation_fn: nn.Module = nn.ReLU(),
-            do_concat_trick: bool = False,
-            num_processor_checkpoint_segments: int = 0,
-            checkpoint_offloading: bool = False,
+        self,
+        processor_size: int = 15,
+        input_dim_node: int = 128,
+        input_dim_edge: int = 128,
+        num_layers_node: int = 2,
+        num_layers_edge: int = 2,
+        aggregation: str = "sum",
+        norm_type: str = "LayerNorm",
+        activation_fn: nn.Module = nn.ReLU(),
+        do_concat_trick: bool = False,
+        num_processor_checkpoint_segments: int = 0,
+        checkpoint_offloading: bool = False,
     ):
         super().__init__()
         self.processor_size = processor_size
@@ -318,7 +318,7 @@ class MeshGraphNetProcessor(nn.Module):
             self.checkpoint_segments = [(0, self.num_processor_layers)]
 
     def run_function(
-            self, segment_start: int, segment_end: int
+        self, segment_start: int, segment_end: int
     ) -> Callable[
         [Tensor, Tensor, Union[DGLGraph, List[DGLGraph]]], Tuple[Tensor, Tensor]
     ]:
@@ -339,9 +339,9 @@ class MeshGraphNetProcessor(nn.Module):
         segment = self.processor_layers[segment_start:segment_end]
 
         def custom_forward(
-                node_features: Tensor,
-                edge_features: Tensor,
-                graph: Union[DGLGraph, List[DGLGraph]],
+            node_features: Tensor,
+            edge_features: Tensor,
+            graph: Union[DGLGraph, List[DGLGraph]],
         ) -> Tuple[Tensor, Tensor]:
             """Custom forward function"""
             for module in segment:
@@ -354,10 +354,10 @@ class MeshGraphNetProcessor(nn.Module):
 
     @torch.jit.unused
     def forward(
-            self,
-            node_features: Tensor,
-            edge_features: Tensor,
-            graph: Union[DGLGraph, List[DGLGraph], CuGraphCSC],
+        self,
+        node_features: Tensor,
+        edge_features: Tensor,
+        graph: Union[DGLGraph, List[DGLGraph], CuGraphCSC],
     ) -> Tensor:
         with self.checkpoint_offload_ctx:
             for segment_start, segment_end in self.checkpoint_segments:

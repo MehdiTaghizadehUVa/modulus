@@ -1,3 +1,19 @@
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Utility functions for physics-based loss computation and custom loss definitions.
 """
@@ -20,7 +36,12 @@ def get_batch_vector(graph):
     if not isinstance(node_counts, torch.Tensor):
         node_counts = torch.tensor(node_counts, device=graph.device)
     # Create a batch vector where each node receives the corresponding graph index.
-    batch_vec = torch.cat([torch.full((int(n),), i, device=graph.device) for i, n in enumerate(node_counts)])
+    batch_vec = torch.cat(
+        [
+            torch.full((int(n),), i, device=graph.device)
+            for i, n in enumerate(node_counts)
+        ]
+    )
     return batch_vec
 
 
@@ -60,7 +81,7 @@ def compute_physics_loss(pred, physics_data, graph, delta_t=1200.0):
     physics_losses = []
 
     for uid in unique_ids:
-        mask = (batch == uid)
+        mask = batch == uid
         pred_diff_sum = predicted_diff[mask].sum()
 
         idx = (unique_ids == uid).nonzero(as_tuple=False).item()
@@ -90,17 +111,41 @@ def compute_physics_loss(pred, physics_data, graph, delta_t=1200.0):
         new_precip_term = denorm_avg_precip * infiltration_area_sum
         new_next_precip_term = denorm_next_precip * infiltration_area_sum
 
-        temp1= pred_total_volume - (
-                    past_volume_denorm + delta_t * (denorm_avg_inflow + new_precip_term))
+        temp1 = pred_total_volume - (
+            past_volume_denorm + delta_t * (denorm_avg_inflow + new_precip_term)
+        )
 
-        temp2 = future_volume_denorm - pred_total_volume - delta_t * (
-                    denorm_next_inflow + new_next_precip_term)
+        temp2 = (
+            future_volume_denorm
+            - pred_total_volume
+            - delta_t * (denorm_next_inflow + new_next_precip_term)
+        )
 
         # Compute continuity terms using ReLU to enforce non-negativity.
-        term1 = F.relu((pred_total_volume - (
-                    past_volume_denorm + delta_t * (denorm_avg_inflow + new_precip_term))) / area_sum) ** 2
-        term2 = F.relu((future_volume_denorm - pred_total_volume - delta_t * (
-                    denorm_next_inflow + new_next_precip_term)) / area_sum) ** 2
+        term1 = (
+            F.relu(
+                (
+                    pred_total_volume
+                    - (
+                        past_volume_denorm
+                        + delta_t * (denorm_avg_inflow + new_precip_term)
+                    )
+                )
+                / area_sum
+            )
+            ** 2
+        )
+        term2 = (
+            F.relu(
+                (
+                    future_volume_denorm
+                    - pred_total_volume
+                    - delta_t * (denorm_next_inflow + new_next_precip_term)
+                )
+                / area_sum
+            )
+            ** 2
+        )
 
         physics_losses.append(term1 + term2)
 
@@ -125,11 +170,11 @@ def custom_loss(pred, targets):
     pred_volume = pred[:, 1]
     target_depth = targets[:, 0]
     target_volume = targets[:, 1]
-    loss_depth = F.mse_loss(pred_depth, target_depth, reduction='mean')
-    loss_volume = F.mse_loss(pred_volume, target_volume, reduction='mean')
+    loss_depth = F.mse_loss(pred_depth, target_depth, reduction="mean")
+    loss_volume = F.mse_loss(pred_volume, target_volume, reduction="mean")
     total_loss = loss_depth + loss_volume
     return {
-        'total_loss': total_loss,
-        'loss_depth': loss_depth,
-        'loss_volume': loss_volume,
+        "total_loss": total_loss,
+        "loss_depth": loss_depth,
+        "loss_volume": loss_volume,
     }

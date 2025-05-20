@@ -14,27 +14,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import numpy as np
 import torch
 from torch import nn
-import numpy as np
 
 
 class KolmogorovArnoldNetwork(nn.Module):
-    def __init__(self, input_dim, output_dim, num_harmonics=5, add_bias=True):
-        """
-        Kolmogorov–Arnold Network (KAN) layer using Fourier-based function approximation.
+    """
+    Kolmogorov–Arnold Network (KAN) layer using Fourier-based function approximation.
 
-        Parameters
-        ----------
-        input_dim : int
-            Dimensionality of the input features.
-        output_dim : int
-            Dimensionality of the output features.
-        num_harmonics : int, optional
-            Number of Fourier harmonics to use (default: 5).
-        add_bias : bool, optional
-            Whether to include an additive bias term (default: True).
-        """
+    Parameters
+    ----------
+    input_dim : int
+        Dimensionality of the input features.
+    output_dim : int
+        Dimensionality of the output features.
+    num_harmonics : int, optional
+        Number of Fourier harmonics to use (default: 5).
+    add_bias : bool, optional
+        Whether to include an additive bias term (default: True).
+    """
+
+    def __init__(self, input_dim, output_dim, num_harmonics=5, add_bias=True):
         super().__init__()
         self.input_dim = input_dim
         self.output_dim = output_dim
@@ -69,7 +70,9 @@ class KolmogorovArnoldNetwork(nn.Module):
         # Reshape input to (batch_size, input_dim, 1) for harmonic multiplication.
         x = x.view(batch_size, self.input_dim, 1)
         # Create harmonic multipliers (from 1 to num_harmonics).
-        k = torch.arange(1, self.num_harmonics + 1, device=x.device).view(1, 1, self.num_harmonics)
+        k = torch.arange(1, self.num_harmonics + 1, device=x.device).view(
+            1, 1, self.num_harmonics
+        )
         # Compute cosine and sine components.
         cos_terms = torch.cos(k * x)
         sin_terms = torch.sin(k * x)

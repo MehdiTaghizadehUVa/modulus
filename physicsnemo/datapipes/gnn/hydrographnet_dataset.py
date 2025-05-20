@@ -1,6 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# ruff: noqa: S324,F821,S113
 
 """
 HydroGraphDataset module
@@ -17,27 +31,25 @@ For testing, each sample returns a tuple (graph, rollout_data) containing the in
 a dictionary of future hydrograph data for evaluation.
 """
 
-import os
-import sys
-import math
+import hashlib
 import json
-import pickle
+import logging
+import math
+import os
 import random
+import sys
 import tarfile
 import zipfile
-import hashlib
-import logging
 from pathlib import Path
-from typing import Any, Optional, Union, List
+from typing import Any, List, Optional, Union
 
-import requests
-import numpy as np
-from tqdm import tqdm
-from scipy.spatial import KDTree
-
-import torch
 import dgl
+import numpy as np
+import requests
+import torch
 from dgl.data import DGLDataset
+from scipy.spatial import KDTree
+from tqdm import tqdm
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -107,9 +119,15 @@ def check_integrity(fpath: Union[str, Path], md5: Optional[str] = None) -> bool:
     return check_md5(fpath, md5)
 
 
-def download_from_url(url: str, root: Union[str, Path], filename: Optional[Union[str, Path]] = None,
-                      md5: Optional[str] = None, size: Optional[int] = None, chunk_size: int = 256 * 64,
-                      extract: bool = True) -> None:
+def download_from_url(
+    url: str,
+    root: Union[str, Path],
+    filename: Optional[Union[str, Path]] = None,
+    md5: Optional[str] = None,
+    size: Optional[int] = None,
+    chunk_size: int = 256 * 64,
+    extract: bool = True,
+) -> None:
     """
     Download a file from a URL, verify its integrity, and optionally extract it.
 
@@ -125,17 +143,22 @@ def download_from_url(url: str, root: Union[str, Path], filename: Optional[Union
     root = Path(root).expanduser()
     root.mkdir(parents=True, exist_ok=True)
     if not filename:
-        filename = url.split('/')[-1]
+        filename = url.split("/")[-1]
     fpath = root / filename
     if check_integrity(fpath, md5):
         logger.info(f"Using downloaded and verified file: {fpath}")
     else:
         logger.info(f"Downloading {url} to {fpath} ...")
-        with requests.get(url, stream=True) as r:
+        with requests.get(url, stream=True, timeout=timeout) as r:
             r.raise_for_status()
-            total_size = int(r.headers.get('content-length', 0))
-            with open(fpath, 'wb') as f, tqdm(desc=str(fpath), total=total_size, unit='iB',
-                                              unit_scale=True, unit_divisor=1024) as bar:
+            total_size = int(r.headers.get("content-length", 0))
+            with open(fpath, "wb") as f, tqdm(
+                desc=str(fpath),
+                total=total_size,
+                unit="iB",
+                unit_scale=True,
+                unit_divisor=1024,
+            ) as bar:
                 for chunk in r.iter_content(chunk_size=chunk_size):
                     if chunk:
                         f.write(chunk)
@@ -149,22 +172,25 @@ def download_from_url(url: str, root: Union[str, Path], filename: Optional[Union
         logger.info(f"Saved to {fpath} successfully.")
     if extract:
         # Extract tar or zip archives
-        if fpath.suffix in ['.tar', '.gz', '.tgz']:
+        if fpath.suffix in [".tar", ".gz", ".tgz"]:
             logger.info(f"Extracting tar archive {fpath}...")
-            with tarfile.open(fpath, 'r:*') as archive:
+            with tarfile.open(fpath, "r:*") as archive:
                 archive.extractall(path=root)
                 names = ", ".join(archive.getnames())
             logger.info(f"Extracted files: {names}")
-        elif fpath.suffix == '.zip':
+        elif fpath.suffix == ".zip":
             logger.info(f"Extracting zip archive {fpath}...")
-            with zipfile.ZipFile(fpath, 'r') as z:
+            with zipfile.ZipFile(fpath, "r") as z:
                 z.extractall(path=root)
                 names = ", ".join(z.namelist())
             logger.info(f"Extracted files: {names}")
 
 
-def download_from_zenodo_record(record_id: str, root: Union[str, Path],
-                                files_to_download: Optional[List[str]] = None) -> None:
+def download_from_zenodo_record(
+    record_id: str,
+    root: Union[str, Path],
+    files_to_download: Optional[List[str]] = None,
+) -> None:
     """
     Download dataset files from a Zenodo record.
 
@@ -180,13 +206,20 @@ def download_from_zenodo_record(record_id: str, root: Union[str, Path],
     if resp.status_code != 200:
         raise RuntimeError(f"Error: request failed with status code {resp.status_code}")
     response_json = resp.json()
-    for file_record in response_json['files']:
-        fname = file_record['key']
+    for file_record in response_json["files"]:
+        fname = file_record["key"]
         if files_to_download is None or fname in files_to_download:
-            file_url = file_record['links']['self']
-            file_md5 = file_record['checksum'][4:]
-            file_size = file_record['size']
-            download_from_url(url=file_url, root=root, filename=fname, md5=file_md5, size=file_size, extract=True)
+            file_url = file_record["links"]["self"]
+            file_md5 = file_record["checksum"][4:]
+            file_size = file_record["size"]
+            download_from_url(
+                url=file_url,
+                root=root,
+                filename=fname,
+                md5=file_md5,
+                size=file_size,
+                extract=True,
+            )
 
 
 def ensure_data_available(data_dir: Union[str, Path]) -> None:
@@ -199,7 +232,9 @@ def ensure_data_available(data_dir: Union[str, Path]) -> None:
     """
     data_dir = Path(data_dir)
     if not data_dir.exists():
-        logger.info(f"Data directory {data_dir} not found. Downloading dataset from Zenodo...")
+        logger.info(
+            f"Data directory {data_dir} not found. Downloading dataset from Zenodo..."
+        )
         download_from_zenodo_record(ZENODO_RECORD_ID, data_dir, FILES_TO_DOWNLOAD)
     else:
         logger.info(f"Data directory {data_dir} already exists. Skipping download.")
@@ -239,11 +274,23 @@ class HydroGraphDataset(DGLDataset):
         return_physics (bool): Flag to include physics data in __getitem__ output.
     """
 
-    def __init__(self, name: str = "hydrograph_dataset", data_dir: Union[str, Path] = "data_directory",
-                 prefix: str = "M80", num_samples: int = 500, n_time_steps: int = 10, k: int = 4,
-                 noise_std: float = 0.01, noise_type: str = "none", hydrograph_ids_file: Optional[str] = None,
-                 split: str = "train", rollout_length: Optional[int] = None, force_reload: bool = False,
-                 verbose: bool = False, return_physics: bool = False):
+    def __init__(
+        self,
+        name: str = "hydrograph_dataset",
+        data_dir: Union[str, Path] = "data_directory",
+        prefix: str = "M80",
+        num_samples: int = 500,
+        n_time_steps: int = 10,
+        k: int = 4,
+        noise_std: float = 0.01,
+        noise_type: str = "none",
+        hydrograph_ids_file: Optional[str] = None,
+        split: str = "train",
+        rollout_length: Optional[int] = None,
+        force_reload: bool = False,
+        verbose: bool = False,
+        return_physics: bool = False,
+    ):
         # Initialize dataset attributes.
         self.data_dir = str(data_dir)
         ensure_data_available(self.data_dir)
@@ -274,26 +321,50 @@ class HydroGraphDataset(DGLDataset):
         """
         Process the dataset to load static and dynamic data and compute necessary normalization stats.
         """
-        epsilon = 1e-8
         if self.split == "train":
             # For training, load constant data and compute static normalization stats.
-            (xy_coords, area, area_denorm, elevation, slope, aspect, curvature,
-             manning, flow_accum, infiltration, self.static_stats) = self.load_constant_data(
-                self.data_dir, self.prefix, norm_stats_static=None)
+            (
+                xy_coords,
+                area,
+                area_denorm,
+                elevation,
+                slope,
+                aspect,
+                curvature,
+                manning,
+                flow_accum,
+                infiltration,
+                self.static_stats,
+            ) = self.load_constant_data(
+                self.data_dir, self.prefix, norm_stats_static=None
+            )
             self.save_norm_stats(self.static_stats, STATIC_NORM_STATS_FILE)
         else:
             # For test or validation, load precomputed normalization stats.
             self.static_stats = self.load_norm_stats(STATIC_NORM_STATS_FILE)
-            (xy_coords, area, area_denorm, elevation, slope, aspect, curvature,
-             manning, flow_accum, infiltration, _) = self.load_constant_data(
-                self.data_dir, self.prefix, norm_stats_static=self.static_stats)
+            (
+                xy_coords,
+                area,
+                area_denorm,
+                elevation,
+                slope,
+                aspect,
+                curvature,
+                manning,
+                flow_accum,
+                infiltration,
+                _,
+            ) = self.load_constant_data(
+                self.data_dir, self.prefix, norm_stats_static=self.static_stats
+            )
 
         # Build the graph connectivity using a k-d tree.
         num_nodes = xy_coords.shape[0]
         kdtree = KDTree(xy_coords)
         _, neighbors = kdtree.query(xy_coords, k=self.k + 1)
-        edge_index = np.vstack([(i, nbr) for i, nbrs in enumerate(neighbors)
-                                  for nbr in nbrs if nbr != i]).T
+        edge_index = np.vstack(
+            [(i, nbr) for i, nbrs in enumerate(neighbors) for nbr in nbrs if nbr != i]
+        ).T
         edge_features = self.create_edge_features(xy_coords, edge_index)
 
         # Store static data.
@@ -326,7 +397,7 @@ class HydroGraphDataset(DGLDataset):
             self.hydrograph_ids = []
             for f in all_files:
                 if f.startswith(f"{self.prefix}_WD_") and f.endswith(".txt"):
-                    parts = f.split('_')
+                    parts = f.split("_")
                     if len(parts) >= 3:
                         hid = os.path.splitext(parts[2])[0]
                         self.hydrograph_ids.append(hid)
@@ -340,15 +411,23 @@ class HydroGraphDataset(DGLDataset):
         precipitation_list = []
         inflow_list = []
         for hid in tqdm(self.hydrograph_ids, desc="Processing Hydrographs"):
-            water_depth, inflow_hydrograph, volume, precipitation = self.load_dynamic_data(
-                self.data_dir, hid, self.prefix, num_points=num_nodes)
-            temp_dynamic_data.append({
-                "water_depth": water_depth,
-                "inflow_hydrograph": inflow_hydrograph,
-                "volume": volume,
-                "precipitation": precipitation,
-                "hydro_id": hid,
-            })
+            (
+                water_depth,
+                inflow_hydrograph,
+                volume,
+                precipitation,
+            ) = self.load_dynamic_data(
+                self.data_dir, hid, self.prefix, num_points=num_nodes
+            )
+            temp_dynamic_data.append(
+                {
+                    "water_depth": water_depth,
+                    "inflow_hydrograph": inflow_hydrograph,
+                    "volume": volume,
+                    "precipitation": precipitation,
+                    "hydro_id": hid,
+                }
+            )
             water_depth_list.append(water_depth.flatten())
             volume_list.append(volume.flatten())
             precipitation_list.append(precipitation.flatten())
@@ -358,17 +437,25 @@ class HydroGraphDataset(DGLDataset):
         if self.split == "train":
             self.dynamic_stats = {}
             water_depth_all = np.concatenate(water_depth_list)
-            self.dynamic_stats["water_depth"] = {"mean": float(np.mean(water_depth_all)),
-                                                 "std": float(np.std(water_depth_all))}
+            self.dynamic_stats["water_depth"] = {
+                "mean": float(np.mean(water_depth_all)),
+                "std": float(np.std(water_depth_all)),
+            }
             volume_all = np.concatenate(volume_list)
-            self.dynamic_stats["volume"] = {"mean": float(np.mean(volume_all)),
-                                            "std": float(np.std(volume_all))}
+            self.dynamic_stats["volume"] = {
+                "mean": float(np.mean(volume_all)),
+                "std": float(np.std(volume_all)),
+            }
             precipitation_all = np.concatenate(precipitation_list)
-            self.dynamic_stats["precipitation"] = {"mean": float(np.mean(precipitation_all)),
-                                                   "std": float(np.std(precipitation_all))}
+            self.dynamic_stats["precipitation"] = {
+                "mean": float(np.mean(precipitation_all)),
+                "std": float(np.std(precipitation_all)),
+            }
             inflow_all = np.concatenate(inflow_list)
-            self.dynamic_stats["inflow_hydrograph"] = {"mean": float(np.mean(inflow_all)),
-                                                       "std": float(np.std(inflow_all))}
+            self.dynamic_stats["inflow_hydrograph"] = {
+                "mean": float(np.mean(inflow_all)),
+                "std": float(np.std(inflow_all)),
+            }
             self.save_norm_stats(self.dynamic_stats, DYNAMIC_NORM_STATS_FILE)
         else:
             self.dynamic_stats = self.load_norm_stats(DYNAMIC_NORM_STATS_FILE)
@@ -377,18 +464,26 @@ class HydroGraphDataset(DGLDataset):
         self.dynamic_data = []
         for dyn in temp_dynamic_data:
             dyn_std = {
-                "water_depth": self.normalize(dyn["water_depth"],
-                                              self.dynamic_stats["water_depth"]["mean"],
-                                              self.dynamic_stats["water_depth"]["std"]),
-                "volume": self.normalize(dyn["volume"],
-                                         self.dynamic_stats["volume"]["mean"],
-                                         self.dynamic_stats["volume"]["std"]),
-                "precipitation": self.normalize(dyn["precipitation"],
-                                                self.dynamic_stats["precipitation"]["mean"],
-                                                self.dynamic_stats["precipitation"]["std"]),
-                "inflow_hydrograph": self.normalize(dyn["inflow_hydrograph"],
-                                                    self.dynamic_stats["inflow_hydrograph"]["mean"],
-                                                    self.dynamic_stats["inflow_hydrograph"]["std"]),
+                "water_depth": self.normalize(
+                    dyn["water_depth"],
+                    self.dynamic_stats["water_depth"]["mean"],
+                    self.dynamic_stats["water_depth"]["std"],
+                ),
+                "volume": self.normalize(
+                    dyn["volume"],
+                    self.dynamic_stats["volume"]["mean"],
+                    self.dynamic_stats["volume"]["std"],
+                ),
+                "precipitation": self.normalize(
+                    dyn["precipitation"],
+                    self.dynamic_stats["precipitation"]["mean"],
+                    self.dynamic_stats["precipitation"]["std"],
+                ),
+                "inflow_hydrograph": self.normalize(
+                    dyn["inflow_hydrograph"],
+                    self.dynamic_stats["inflow_hydrograph"]["mean"],
+                    self.dynamic_stats["inflow_hydrograph"]["std"],
+                ),
                 "hydro_id": dyn["hydro_id"],
             }
             self.dynamic_data.append(dyn_std)
@@ -433,21 +528,36 @@ class HydroGraphDataset(DGLDataset):
             dyn = self.dynamic_data[hydro_idx]
 
             # Determine the end index for the dynamic window.
-            end_index = t_idx + self.n_time_steps + 1 if self.noise_type == "pushforward" else t_idx + self.n_time_steps
+            end_index = (
+                t_idx + self.n_time_steps + 1
+                if self.noise_type == "pushforward"
+                else t_idx + self.n_time_steps
+            )
 
             # Compute node features and future flow/precipitation values.
             node_features, future_flow, future_precip = self.create_node_features(
-                sd["xy_coords"], sd["area"], sd["elevation"], sd["slope"], sd["aspect"],
-                sd["curvature"], sd["manning"], sd["flow_accum"], sd["infiltration"],
+                sd["xy_coords"],
+                sd["area"],
+                sd["elevation"],
+                sd["slope"],
+                sd["aspect"],
+                sd["curvature"],
+                sd["manning"],
+                sd["flow_accum"],
+                sd["infiltration"],
                 dyn["water_depth"][t_idx:end_index, :],
                 dyn["volume"][t_idx:end_index, :],
                 dyn["precipitation"],
-                t_idx, self.n_time_steps, dyn["inflow_hydrograph"]
+                t_idx,
+                self.n_time_steps,
+                dyn["inflow_hydrograph"],
             )
             target_time = t_idx + self.n_time_steps
             prev_time = target_time - 1
             # Compute target differences for water depth and volume.
-            target_depth = dyn["water_depth"][target_time, :] - dyn["water_depth"][prev_time, :]
+            target_depth = (
+                dyn["water_depth"][target_time, :] - dyn["water_depth"][prev_time, :]
+            )
             target_volume = dyn["volume"][target_time, :] - dyn["volume"][prev_time, :]
             target = np.stack([target_depth, target_volume], axis=1)
 
@@ -463,17 +573,33 @@ class HydroGraphDataset(DGLDataset):
             if need_physics:
                 # Compute physics data in the denormalized domain.
                 past_volume = float(np.sum(dyn["volume"][prev_time, :]))
-                future_volume = (float(np.sum(dyn["volume"][target_time + 1, :]))
-                                 if (target_time + 1 < dyn["volume"].shape[0])
-                                 else float(np.sum(dyn["volume"][target_time, :])))
-                avg_inflow_norm = float((dyn["inflow_hydrograph"][prev_time] + dyn["inflow_hydrograph"][target_time]) / 2)
-                avg_precip_norm = float((dyn["precipitation"][prev_time] + dyn["precipitation"][target_time]) / 2)
-                denorm_avg_inflow = (avg_inflow_norm *
-                                     self.dynamic_stats["inflow_hydrograph"]["std"] +
-                                     self.dynamic_stats["inflow_hydrograph"]["mean"])
-                denorm_avg_precip = (avg_precip_norm *
-                                     self.dynamic_stats["precipitation"]["std"] +
-                                     self.dynamic_stats["precipitation"]["mean"])
+                future_volume = (
+                    float(np.sum(dyn["volume"][target_time + 1, :]))
+                    if (target_time + 1 < dyn["volume"].shape[0])
+                    else float(np.sum(dyn["volume"][target_time, :]))
+                )
+                avg_inflow_norm = float(
+                    (
+                        dyn["inflow_hydrograph"][prev_time]
+                        + dyn["inflow_hydrograph"][target_time]
+                    )
+                    / 2
+                )
+                avg_precip_norm = float(
+                    (
+                        dyn["precipitation"][prev_time]
+                        + dyn["precipitation"][target_time]
+                    )
+                    / 2
+                )
+                denorm_avg_inflow = (
+                    avg_inflow_norm * self.dynamic_stats["inflow_hydrograph"]["std"]
+                    + self.dynamic_stats["inflow_hydrograph"]["mean"]
+                )
+                denorm_avg_precip = (
+                    avg_precip_norm * self.dynamic_stats["precipitation"]["std"]
+                    + self.dynamic_stats["precipitation"]["mean"]
+                )
 
                 # --- New: Compute next-step inflow and precipitation for physics loss term2 ---
                 if (target_time + 1) < dyn["inflow_hydrograph"].shape[0]:
@@ -482,19 +608,25 @@ class HydroGraphDataset(DGLDataset):
                 else:
                     next_inflow_norm = dyn["inflow_hydrograph"][target_time]
                     next_precip_norm = dyn["precipitation"][target_time]
-                denorm_next_inflow = (next_inflow_norm *
-                                      self.dynamic_stats["inflow_hydrograph"]["std"] +
-                                      self.dynamic_stats["inflow_hydrograph"]["mean"])
-                denorm_next_precip = (next_precip_norm *
-                                      self.dynamic_stats["precipitation"]["std"] +
-                                      self.dynamic_stats["precipitation"]["mean"])
+                denorm_next_inflow = (
+                    next_inflow_norm * self.dynamic_stats["inflow_hydrograph"]["std"]
+                    + self.dynamic_stats["inflow_hydrograph"]["mean"]
+                )
+                denorm_next_precip = (
+                    next_precip_norm * self.dynamic_stats["precipitation"]["std"]
+                    + self.dynamic_stats["precipitation"]["mean"]
+                )
 
                 # Build the complete physics data dictionary.
                 full_physics_data = {
-                    "flow_future": float(future_flow * self.dynamic_stats["inflow_hydrograph"]["std"] +
-                                           self.dynamic_stats["inflow_hydrograph"]["mean"]),
-                    "precip_future": float(future_precip * self.dynamic_stats["precipitation"]["std"] +
-                                             self.dynamic_stats["precipitation"]["mean"]),
+                    "flow_future": float(
+                        future_flow * self.dynamic_stats["inflow_hydrograph"]["std"]
+                        + self.dynamic_stats["inflow_hydrograph"]["mean"]
+                    ),
+                    "precip_future": float(
+                        future_precip * self.dynamic_stats["precipitation"]["std"]
+                        + self.dynamic_stats["precipitation"]["mean"]
+                    ),
                     "past_volume": past_volume,
                     "future_volume": future_volume,
                     "avg_inflow": denorm_avg_inflow,
@@ -503,17 +635,25 @@ class HydroGraphDataset(DGLDataset):
                     "next_precip": denorm_next_precip,
                     "volume_mean": float(self.dynamic_stats["volume"]["mean"]),
                     "volume_std": float(self.dynamic_stats["volume"]["std"]),
-                    "inflow_mean": float(self.dynamic_stats["inflow_hydrograph"]["mean"]),
+                    "inflow_mean": float(
+                        self.dynamic_stats["inflow_hydrograph"]["mean"]
+                    ),
                     "inflow_std": float(self.dynamic_stats["inflow_hydrograph"]["std"]),
                     "precip_mean": float(self.dynamic_stats["precipitation"]["mean"]),
                     "precip_std": float(self.dynamic_stats["precipitation"]["std"]),
                     "num_nodes": float(sd["xy_coords"].shape[0]),
                     "area_sum": float(np.sum(sd["area_denorm"])),
-                    "infiltration_area_sum": float(np.sum(
-                        self.denormalize(sd["infiltration"],
-                                         self.static_stats["infiltration"]["mean"],
-                                         self.static_stats["infiltration"]["std"]) * sd["area_denorm"]
-                    )) / 100.0
+                    "infiltration_area_sum": float(
+                        np.sum(
+                            self.denormalize(
+                                sd["infiltration"],
+                                self.static_stats["infiltration"]["mean"],
+                                self.static_stats["infiltration"]["std"],
+                            )
+                            * sd["area_denorm"]
+                        )
+                    )
+                    / 100.0,
                 }
                 # For pushforward noise without full physics data requested.
                 if not self.return_physics and self.noise_type == "pushforward":
@@ -532,12 +672,21 @@ class HydroGraphDataset(DGLDataset):
             # Test mode: Each sample returns a graph and a rollout data dictionary.
             dyn = self.dynamic_data[idx]
             node_features, _, _ = self.create_node_features(
-                sd["xy_coords"], sd["area"], sd["elevation"], sd["slope"], sd["aspect"],
-                sd["curvature"], sd["manning"], sd["flow_accum"], sd["infiltration"],
-                dyn["water_depth"][0:self.n_time_steps, :],
-                dyn["volume"][0:self.n_time_steps, :],
+                sd["xy_coords"],
+                sd["area"],
+                sd["elevation"],
+                sd["slope"],
+                sd["aspect"],
+                sd["curvature"],
+                sd["manning"],
+                sd["flow_accum"],
+                sd["infiltration"],
+                dyn["water_depth"][0 : self.n_time_steps, :],
+                dyn["volume"][0 : self.n_time_steps, :],
                 dyn["precipitation"],
-                0, self.n_time_steps, dyn["inflow_hydrograph"]
+                0,
+                self.n_time_steps,
+                dyn["inflow_hydrograph"],
             )
             src, dst = sd["edge_index"]
             g = dgl.graph((src, dst))
@@ -545,17 +694,29 @@ class HydroGraphDataset(DGLDataset):
             g.ndata["x"] = torch.tensor(node_features, dtype=torch.float)
             rollout_data = {
                 "inflow": torch.tensor(
-                    dyn["inflow_hydrograph"][self.n_time_steps:self.n_time_steps + self.rollout_length],
-                    dtype=torch.float),
+                    dyn["inflow_hydrograph"][
+                        self.n_time_steps : self.n_time_steps + self.rollout_length
+                    ],
+                    dtype=torch.float,
+                ),
                 "precipitation": torch.tensor(
-                    dyn["precipitation"][self.n_time_steps:self.n_time_steps + self.rollout_length],
-                    dtype=torch.float),
+                    dyn["precipitation"][
+                        self.n_time_steps : self.n_time_steps + self.rollout_length
+                    ],
+                    dtype=torch.float,
+                ),
                 "water_depth_gt": torch.tensor(
-                    dyn["water_depth"][self.n_time_steps:self.n_time_steps + self.rollout_length],
-                    dtype=torch.float),
+                    dyn["water_depth"][
+                        self.n_time_steps : self.n_time_steps + self.rollout_length
+                    ],
+                    dtype=torch.float,
+                ),
                 "volume_gt": torch.tensor(
-                    dyn["volume"][self.n_time_steps:self.n_time_steps + self.rollout_length],
-                    dtype=torch.float),
+                    dyn["volume"][
+                        self.n_time_steps : self.n_time_steps + self.rollout_length
+                    ],
+                    dtype=torch.float,
+                ),
             }
             return g, rollout_data
 
@@ -564,8 +725,12 @@ class HydroGraphDataset(DGLDataset):
         return self.length
 
     @staticmethod
-    def normalize(data: np.ndarray, mean: Union[float, list, np.ndarray],
-                  std: Union[float, list, np.ndarray], epsilon: float = 1e-8) -> np.ndarray:
+    def normalize(
+        data: np.ndarray,
+        mean: Union[float, list, np.ndarray],
+        std: Union[float, list, np.ndarray],
+        epsilon: float = 1e-8,
+    ) -> np.ndarray:
         """
         Normalize the data using the provided mean and standard deviation.
 
@@ -583,8 +748,12 @@ class HydroGraphDataset(DGLDataset):
         return (data - mean) / (std + epsilon)
 
     @staticmethod
-    def denormalize(data: np.ndarray, mean: Union[float, list, np.ndarray],
-                    std: Union[float, list, np.ndarray], epsilon: float = 1e-8) -> np.ndarray:
+    def denormalize(
+        data: np.ndarray,
+        mean: Union[float, list, np.ndarray],
+        std: Union[float, list, np.ndarray],
+        epsilon: float = 1e-8,
+    ) -> np.ndarray:
         """
         Denormalize the data using the provided mean and standard deviation.
 
@@ -601,7 +770,9 @@ class HydroGraphDataset(DGLDataset):
         std = np.array(std) if isinstance(std, list) else std
         return data * (std + epsilon) + mean
 
-    def apply_noise_to_feature(self, data: np.ndarray, noise_type: str, noise_std: float) -> np.ndarray:
+    def apply_noise_to_feature(
+        self, data: np.ndarray, noise_type: str, noise_std: float
+    ) -> np.ndarray:
         """
         Apply specified noise to a feature matrix.
 
@@ -628,7 +799,9 @@ class HydroGraphDataset(DGLDataset):
             noise = np.random.normal(0, noise_std, size=(T, num_nodes))
             return data + noise
         elif noise_type == "random_walk":
-            noise_increments = np.random.normal(0, noise_std / math.sqrt(T), size=(T, num_nodes))
+            noise_increments = np.random.normal(
+                0, noise_std / math.sqrt(T), size=(T, num_nodes)
+            )
             noise_cumulative = np.cumsum(noise_increments, axis=0)
             return data + noise_cumulative
         else:
@@ -644,7 +817,7 @@ class HydroGraphDataset(DGLDataset):
             filename (str): Filename to save the stats.
         """
         filepath = os.path.join(self.data_dir, filename)
-        with open(filepath, 'w') as f:
+        with open(filepath, "w") as f:
             json.dump(stats, f)
 
     def load_norm_stats(self, filename: str) -> dict:
@@ -658,12 +831,13 @@ class HydroGraphDataset(DGLDataset):
             dict: Normalization statistics.
         """
         filepath = os.path.join(self.data_dir, filename)
-        with open(filepath, 'r') as f:
+        with open(filepath, "r") as f:
             stats = json.load(f)
         return stats
 
-    def load_constant_data(self, folder: str, prefix: str,
-                           norm_stats_static: Optional[dict] = None):
+    def load_constant_data(
+        self, folder: str, prefix: str, norm_stats_static: Optional[dict] = None
+    ):
         """
         Load and standardize static (constant) data such as coordinates, elevation, and flow accumulation.
 
@@ -702,29 +876,61 @@ class HydroGraphDataset(DGLDataset):
         flow_accum_path = os.path.join(folder, f"{prefix}_FA.txt")
         infiltration_path = os.path.join(folder, f"{prefix}_IP.txt")
 
-        xy_coords = np.loadtxt(xy_path, delimiter='\t')
+        xy_coords = np.loadtxt(xy_path, delimiter="\t")
         xy_coords = standardize(xy_coords, "xy_coords")
-        area_denorm = np.loadtxt(ca_path, delimiter='\t')[:xy_coords.shape[0]].reshape(-1, 1)
+        area_denorm = np.loadtxt(ca_path, delimiter="\t")[: xy_coords.shape[0]].reshape(
+            -1, 1
+        )
         area = standardize(area_denorm, "area")
-        elevation = np.loadtxt(ce_path, delimiter='\t')[:xy_coords.shape[0]].reshape(-1, 1)
+        elevation = np.loadtxt(ce_path, delimiter="\t")[: xy_coords.shape[0]].reshape(
+            -1, 1
+        )
         elevation = standardize(elevation, "elevation")
-        slope = np.loadtxt(cs_path, delimiter='\t')[:xy_coords.shape[0]].reshape(-1, 1)
+        slope = np.loadtxt(cs_path, delimiter="\t")[: xy_coords.shape[0]].reshape(-1, 1)
         slope = standardize(slope, "slope")
-        aspect = np.loadtxt(aspect_path, delimiter='\t')[:xy_coords.shape[0]].reshape(-1, 1)
+        aspect = np.loadtxt(aspect_path, delimiter="\t")[: xy_coords.shape[0]].reshape(
+            -1, 1
+        )
         aspect = standardize(aspect, "aspect")
-        curvature = np.loadtxt(curvature_path, delimiter='\t')[:xy_coords.shape[0]].reshape(-1, 1)
+        curvature = np.loadtxt(curvature_path, delimiter="\t")[
+            : xy_coords.shape[0]
+        ].reshape(-1, 1)
         curvature = standardize(curvature, "curvature")
-        manning = np.loadtxt(manning_path, delimiter='\t')[:xy_coords.shape[0]].reshape(-1, 1)
+        manning = np.loadtxt(manning_path, delimiter="\t")[
+            : xy_coords.shape[0]
+        ].reshape(-1, 1)
         manning = standardize(manning, "manning")
-        flow_accum = np.loadtxt(flow_accum_path, delimiter='\t')[:xy_coords.shape[0]].reshape(-1, 1)
+        flow_accum = np.loadtxt(flow_accum_path, delimiter="\t")[
+            : xy_coords.shape[0]
+        ].reshape(-1, 1)
         flow_accum = standardize(flow_accum, "flow_accum")
-        infiltration = np.loadtxt(infiltration_path, delimiter='\t')[:xy_coords.shape[0]].reshape(-1, 1)
+        infiltration = np.loadtxt(infiltration_path, delimiter="\t")[
+            : xy_coords.shape[0]
+        ].reshape(-1, 1)
         infiltration = standardize(infiltration, "infiltration")
-        return (xy_coords, area, area_denorm, elevation, slope, aspect, curvature,
-                manning, flow_accum, infiltration, stats)
+        return (
+            xy_coords,
+            area,
+            area_denorm,
+            elevation,
+            slope,
+            aspect,
+            curvature,
+            manning,
+            flow_accum,
+            infiltration,
+            stats,
+        )
 
-    def load_dynamic_data(self, folder: str, hydrograph_id: str, prefix: str,
-                          num_points: int, interval: int = 1, skip: int = 72):
+    def load_dynamic_data(
+        self,
+        folder: str,
+        hydrograph_id: str,
+        prefix: str,
+        num_points: int,
+        interval: int = 1,
+        skip: int = 72,
+    ):
         """
         Load dynamic data (water depth, inflow, volume, and precipitation) for a given hydrograph.
 
@@ -743,24 +949,38 @@ class HydroGraphDataset(DGLDataset):
         inflow_path = os.path.join(folder, f"{prefix}_US_InF_{hydrograph_id}.txt")
         volume_path = os.path.join(folder, f"{prefix}_V_{hydrograph_id}.txt")
         precipitation_path = os.path.join(folder, f"{prefix}_Pr_{hydrograph_id}.txt")
-        water_depth = np.loadtxt(wd_path, delimiter='\t')[skip::interval, :num_points]
-        inflow_hydrograph = np.loadtxt(inflow_path, delimiter='\t')[skip::interval, 1]
-        volume = np.loadtxt(volume_path, delimiter='\t')[skip::interval, :num_points]
-        precipitation = np.loadtxt(precipitation_path, delimiter='\t')[skip::interval]
+        water_depth = np.loadtxt(wd_path, delimiter="\t")[skip::interval, :num_points]
+        inflow_hydrograph = np.loadtxt(inflow_path, delimiter="\t")[skip::interval, 1]
+        volume = np.loadtxt(volume_path, delimiter="\t")[skip::interval, :num_points]
+        precipitation = np.loadtxt(precipitation_path, delimiter="\t")[skip::interval]
         # Limit data until 25 time steps after the peak inflow.
         peak_time_idx = np.argmax(inflow_hydrograph)
-        water_depth = water_depth[:peak_time_idx + 25]
-        volume = volume[:peak_time_idx + 25]
-        precipitation = precipitation[:peak_time_idx + 25] * 2.7778e-7  # Unit conversion
-        inflow_hydrograph = inflow_hydrograph[:peak_time_idx + 25]
+        water_depth = water_depth[: peak_time_idx + 25]
+        volume = volume[: peak_time_idx + 25]
+        precipitation = (
+            precipitation[: peak_time_idx + 25] * 2.7778e-7
+        )  # Unit conversion
+        inflow_hydrograph = inflow_hydrograph[: peak_time_idx + 25]
         return water_depth, inflow_hydrograph, volume, precipitation
 
-    def create_node_features(self, xy_coords: np.ndarray, area: np.ndarray, elevation: np.ndarray,
-                             slope: np.ndarray, aspect: np.ndarray, curvature: np.ndarray,
-                             manning: np.ndarray, flow_accum: np.ndarray, infiltration: np.ndarray,
-                             water_depth: np.ndarray, volume: np.ndarray,
-                             precipitation_data: np.ndarray, time_step: int, n_time_steps: int,
-                             inflow_hydrograph: np.ndarray) -> (np.ndarray, float, float):
+    def create_node_features(
+        self,
+        xy_coords: np.ndarray,
+        area: np.ndarray,
+        elevation: np.ndarray,
+        slope: np.ndarray,
+        aspect: np.ndarray,
+        curvature: np.ndarray,
+        manning: np.ndarray,
+        flow_accum: np.ndarray,
+        infiltration: np.ndarray,
+        water_depth: np.ndarray,
+        volume: np.ndarray,
+        precipitation_data: np.ndarray,
+        time_step: int,
+        n_time_steps: int,
+        inflow_hydrograph: np.ndarray,
+    ) -> (np.ndarray, float, float):
         """
         Create node features by combining static and dynamic data.
 
@@ -790,35 +1010,43 @@ class HydroGraphDataset(DGLDataset):
         # Apply noise if required (excluding "none" and "pushforward").
         if self.noise_type not in ["none", "pushforward"]:
             window_slice = slice(time_step, time_step + n_time_steps)
-            water_depth[window_slice, :] = self.apply_noise_to_feature(water_depth[window_slice, :],
-                                                                       self.noise_type, self.noise_std)
-            volume[window_slice, :] = self.apply_noise_to_feature(volume[window_slice, :],
-                                                                  self.noise_type, self.noise_std)
+            water_depth[window_slice, :] = self.apply_noise_to_feature(
+                water_depth[window_slice, :], self.noise_type, self.noise_std
+            )
+            volume[window_slice, :] = self.apply_noise_to_feature(
+                volume[window_slice, :], self.noise_type, self.noise_std
+            )
         num_nodes = xy_coords.shape[0]
         # Create static copies of inflow and precipitation for each node.
-        flow_hydrograph_current_step = np.full((num_nodes, 1), inflow_hydrograph[time_step])
+        flow_hydrograph_current_step = np.full(
+            (num_nodes, 1), inflow_hydrograph[time_step]
+        )
         precip_current_step = np.full((num_nodes, 1), precipitation_data[time_step])
         # Concatenate all features horizontally.
-        features = np.hstack([
-            xy_coords,
-            area,
-            elevation,
-            slope,
-            aspect,
-            curvature,
-            manning,
-            flow_accum,
-            infiltration,
-            flow_hydrograph_current_step,
-            precip_current_step,
-            water_depth.T,
-            volume.T
-        ])
+        features = np.hstack(
+            [
+                xy_coords,
+                area,
+                elevation,
+                slope,
+                aspect,
+                curvature,
+                manning,
+                flow_accum,
+                infiltration,
+                flow_hydrograph_current_step,
+                precip_current_step,
+                water_depth.T,
+                volume.T,
+            ]
+        )
         future_inflow = inflow_hydrograph[time_step + n_time_steps]
         future_precip = precipitation_data[time_step + n_time_steps]
         return features, future_inflow, future_precip
 
-    def create_edge_features(self, xy_coords: np.ndarray, edge_index: np.ndarray) -> np.ndarray:
+    def create_edge_features(
+        self, xy_coords: np.ndarray, edge_index: np.ndarray
+    ) -> np.ndarray:
         """
         Create edge features based on the relative positions of connected nodes.
 
@@ -834,6 +1062,8 @@ class HydroGraphDataset(DGLDataset):
         distance = np.linalg.norm(relative_coords, axis=1)
         epsilon = 1e-8
         # Normalize relative coordinates and distance.
-        relative_coords = (relative_coords - np.mean(relative_coords, axis=0)) / (np.std(relative_coords, axis=0) + epsilon)
+        relative_coords = (relative_coords - np.mean(relative_coords, axis=0)) / (
+            np.std(relative_coords, axis=0) + epsilon
+        )
         distance = (distance - np.mean(distance)) / (np.std(distance) + epsilon)
         return np.hstack([relative_coords, distance[:, None]])

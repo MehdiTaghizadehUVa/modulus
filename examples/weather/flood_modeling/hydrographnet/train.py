@@ -1,3 +1,19 @@
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import time
 import hydra
 from hydra.utils import to_absolute_path
@@ -26,10 +42,13 @@ def collate_fn(batch):
         physics_data = {}
         # For each key, build a tensor by stacking the scalar values from each sample.
         for key in physics_list[0].keys():
-            physics_data[key] = torch.tensor([d[key] for d in physics_list], dtype=torch.float)
+            physics_data[key] = torch.tensor(
+                [d[key] for d in physics_list], dtype=torch.float
+            )
         return batched_graph, physics_data
     else:
         return dgl.batch(batch)
+
 
 class MGNTrainer:
     def __init__(self, cfg: DictConfig, rank_zero_logger: RankZeroLoggingWrapper):
@@ -47,7 +66,9 @@ class MGNTrainer:
         # Set activation function.
         mlp_act = "relu"
         if cfg.recompute_activation:
-            rank_zero_logger.info("Setting MLP activation to SiLU for recompute_activation.")
+            rank_zero_logger.info(
+                "Setting MLP activation to SiLU for recompute_activation."
+            )
             mlp_act = "silu"
 
         rank_zero_logger.info("Initializing HydroGraphDataset...")
@@ -65,7 +86,7 @@ class MGNTrainer:
             split="train",
             force_reload=False,
             verbose=False,
-            return_physics=self.use_physics_loss
+            return_physics=self.use_physics_loss,
         )
         self.dataloader = GraphDataLoader(
             dataset,
@@ -75,7 +96,7 @@ class MGNTrainer:
             pin_memory=True,
             use_ddp=self.dist.world_size > 1,
             num_workers=cfg.num_dataloader_workers,
-            collate_fn=collate_fn
+            collate_fn=collate_fn,
         )
         rank_zero_logger.info("Dataset and dataloader initialization complete.")
 
@@ -115,18 +136,21 @@ class MGNTrainer:
         try:
             if cfg.use_apex:
                 from apex.optimizers import FusedAdam
+
                 self.optimizer = FusedAdam(self.model.parameters(), lr=cfg.lr)
             else:
                 self.optimizer = None
         except ImportError:
-            rank_zero_logger.warning("NVIDIA Apex is not installed; FusedAdam optimizer will not be used.")
+            rank_zero_logger.warning(
+                "NVIDIA Apex is not installed; FusedAdam optimizer will not be used."
+            )
             self.optimizer = None
         if self.optimizer is None:
             self.optimizer = torch.optim.Adam(self.model.parameters(), lr=cfg.lr)
         rank_zero_logger.info(f"Using optimizer: {self.optimizer.__class__.__name__}")
 
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(
-            self.optimizer, lr_lambda=lambda epoch: cfg.lr_decay_rate ** epoch
+            self.optimizer, lr_lambda=lambda epoch: cfg.lr_decay_rate**epoch
         )
         self.scaler = GradScaler()
 
@@ -141,7 +165,9 @@ class MGNTrainer:
             scaler=self.scaler,
             device=self.dist.device,
         )
-        rank_zero_logger.info(f"Checkpoint loaded. Starting training from epoch {self.epoch_init}.")
+        rank_zero_logger.info(
+            f"Checkpoint loaded. Starting training from epoch {self.epoch_init}."
+        )
 
     def train(self, batch):
         if self.use_physics_loss:
@@ -165,30 +191,42 @@ class MGNTrainer:
                 n_static = 12  # assumed static features dimension
                 n_time = (X.shape[1] - n_static) // 2
                 static_part = X[:, :n_static]
-                water_depth_full = X[:, n_static:n_static + n_time]
-                volume_full = X[:, n_static + n_time:n_static + 2 * n_time]
+                water_depth_full = X[:, n_static : n_static + n_time]
+                volume_full = X[:, n_static + n_time : n_static + 2 * n_time]
                 # For one-step prediction, use dynamic features from indices 1: (last n_time_steps)
                 water_depth_window_one = water_depth_full[:, 1:]
                 volume_window_one = volume_full[:, 1:]
-                X_one = torch.cat([static_part, water_depth_window_one, volume_window_one], dim=1)
+                X_one = torch.cat(
+                    [static_part, water_depth_window_one, volume_window_one], dim=1
+                )
                 pred_one = self.model(X_one, graph.edata["x"], graph)
                 one_step_loss = self.criterion(pred_one, graph.ndata["y"])
 
                 # Stability branch (example implementation)
-                water_depth_window_stab = water_depth_full[:, :n_time - 1]
-                volume_window_stab = volume_full[:, :n_time - 1]
-                X_stab = torch.cat([static_part, water_depth_window_stab, volume_window_stab], dim=1)
+                water_depth_window_stab = water_depth_full[:, : n_time - 1]
+                volume_window_stab = volume_full[:, : n_time - 1]
+                X_stab = torch.cat(
+                    [static_part, water_depth_window_stab, volume_window_stab], dim=1
+                )
                 pred_stab = self.model(X_stab, graph.edata["x"], graph)
                 pred_stab_detached = pred_stab.detach()
                 water_depth_updated = torch.cat(
-                    [water_depth_full[:, 1:2], water_depth_full[:, 1:2] + pred_stab_detached[:, 0:1]],
-                    dim=1
+                    [
+                        water_depth_full[:, 1:2],
+                        water_depth_full[:, 1:2] + pred_stab_detached[:, 0:1],
+                    ],
+                    dim=1,
                 )
                 volume_updated = torch.cat(
-                    [volume_full[:, 1:2], volume_full[:, 1:2] + pred_stab_detached[:, 1:2]],
-                    dim=1
+                    [
+                        volume_full[:, 1:2],
+                        volume_full[:, 1:2] + pred_stab_detached[:, 1:2],
+                    ],
+                    dim=1,
                 )
-                X_stab_updated = torch.cat([static_part, water_depth_updated, volume_updated], dim=1)
+                X_stab_updated = torch.cat(
+                    [static_part, water_depth_updated, volume_updated], dim=1
+                )
                 pred_stab2 = self.model(X_stab_updated, graph.edata["x"], graph)
                 stability_loss = self.criterion(pred_stab2, graph.ndata["y"])
 
@@ -196,10 +234,12 @@ class MGNTrainer:
                 loss_dict = {
                     "total_loss": loss,
                     "loss_one": one_step_loss,
-                    "loss_stability": stability_loss
+                    "loss_stability": stability_loss,
                 }
                 if self.use_physics_loss and physics_data is not None:
-                    phy_loss = compute_physics_loss(pred_one, physics_data, graph, delta_t=self.delta_t)
+                    phy_loss = compute_physics_loss(
+                        pred_one, physics_data, graph, delta_t=self.delta_t
+                    )
                     loss = loss + self.physics_loss_weight * phy_loss
                     loss_dict["physics_loss"] = phy_loss
             return loss, loss_dict
@@ -210,7 +250,9 @@ class MGNTrainer:
                 loss = mse_loss
                 loss_dict = {"total_loss": loss, "mse_loss": mse_loss}
                 if self.use_physics_loss and physics_data is not None:
-                    phy_loss = compute_physics_loss(pred, physics_data, graph, delta_t=self.delta_t)
+                    phy_loss = compute_physics_loss(
+                        pred, physics_data, graph, delta_t=self.delta_t
+                    )
                     loss = loss + self.physics_loss_weight * phy_loss
                     loss_dict["physics_loss"] = phy_loss
             return loss, loss_dict
@@ -223,6 +265,7 @@ class MGNTrainer:
         else:
             loss.backward()
             self.optimizer.step()
+
 
 @hydra.main(version_base="1.3", config_path="conf", config_name="config")
 def main(cfg: DictConfig) -> None:
@@ -251,16 +294,22 @@ def main(cfg: DictConfig) -> None:
             epoch_loss += loss.item()
             num_batches += 1
 
-        avg_loss = epoch_loss / num_batches if num_batches > 0 else float('inf')
+        avg_loss = epoch_loss / num_batches if num_batches > 0 else float("inf")
         rank_zero_logger.info(f"Epoch {epoch} completed. Average Loss: {avg_loss:.4e}")
 
-        wandb.log({
-            "total_loss": loss_dict["total_loss"].detach().cpu(),
-            "loss_one": loss_dict.get("loss_one", torch.tensor(0.0)).detach().cpu(),
-            "loss_stability": loss_dict.get("loss_stability", torch.tensor(0.0)).detach().cpu(),
-            "physics_loss": loss_dict.get("physics_loss", torch.tensor(0.0)).detach().cpu(),
-            "epoch": epoch
-        })
+        wandb.log(
+            {
+                "total_loss": loss_dict["total_loss"].detach().cpu(),
+                "loss_one": loss_dict.get("loss_one", torch.tensor(0.0)).detach().cpu(),
+                "loss_stability": loss_dict.get("loss_stability", torch.tensor(0.0))
+                .detach()
+                .cpu(),
+                "physics_loss": loss_dict.get("physics_loss", torch.tensor(0.0))
+                .detach()
+                .cpu(),
+                "epoch": epoch,
+            }
+        )
 
         if dist.world_size > 1:
             torch.distributed.barrier()
@@ -280,6 +329,7 @@ def main(cfg: DictConfig) -> None:
         start_time = time.time()
 
     rank_zero_logger.info("Training completed successfully.")
+
 
 if __name__ == "__main__":
     main()
