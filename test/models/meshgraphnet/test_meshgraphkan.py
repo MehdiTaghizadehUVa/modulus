@@ -2,15 +2,18 @@
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
+# Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
+#
 #     http://www.apache.org/licenses/LICENSE-2.0
+#
 # Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
+# distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 # ruff: noqa: E402
 
 """
@@ -96,7 +99,9 @@ def test_meshgraphkan_constructor(device):
 
         bsize = random.randint(1, 4)
         n_nodes, n_edges = random.randint(8, 15), random.randint(8, 15)
-        graph = dgl.batch([dgl.rand_graph(n_nodes, n_edges).to(device) for _ in range(bsize)])
+        graph = dgl.batch(
+            [dgl.rand_graph(n_nodes, n_edges).to(device) for _ in range(bsize)]
+        )
         node_f = torch.randn(graph.num_nodes(), kw["input_dim_nodes"]).to(device)
         edge_f = torch.randn(graph.num_edges(), kw["input_dim_edges"]).to(device)
         out = model(node_f, edge_f, graph)
@@ -112,7 +117,9 @@ def test_meshgraphkan_optims(device):
         model = MeshGraphKAN(3, 3, 2).to(device)
         bsize = random.randint(1, 6)
         n_nodes, n_edges = random.randint(10, 20), random.randint(10, 20)
-        graph = dgl.batch([dgl.rand_graph(n_nodes, n_edges).to(device) for _ in range(bsize)])
+        graph = dgl.batch(
+            [dgl.rand_graph(n_nodes, n_edges).to(device) for _ in range(bsize)]
+        )
         node_f = torch.randn(graph.num_nodes(), 3).to(device)
         edge_f = torch.randn(graph.num_edges(), 3).to(device)
         return model, (node_f, edge_f, graph)

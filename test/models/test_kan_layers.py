@@ -5,7 +5,9 @@
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
+#
 #     http://www.apache.org/licenses/LICENSE-2.0
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -34,7 +36,9 @@ def test_kan_initialization(device):
 @pytest.mark.parametrize("bias_flag", [True, False])
 def test_kan_forward_pass(device, bias_flag):
     batch, in_dim, out_dim = 8, 5, 2
-    kan = KolmogorovArnoldNetwork(in_dim, out_dim, num_harmonics=4, add_bias=bias_flag).to(device)
+    kan = KolmogorovArnoldNetwork(
+        in_dim, out_dim, num_harmonics=4, add_bias=bias_flag
+    ).to(device)
     x = torch.randn(batch, in_dim, device=device)
     y = kan(x)
     assert y.shape == (batch, out_dim)
