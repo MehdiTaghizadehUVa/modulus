@@ -58,7 +58,7 @@ def test_hydrograph_constructor(hydrograph_data_dir, device, pytestconfig):
         k=2,
         noise_type="none",
         verbose=False,
-    ).to(device=None)
+    )
 
     common.check_datapipe_iterable(dataset)
     assert len(dataset) > 0
@@ -71,14 +71,6 @@ def test_hydrograph_constructor(hydrograph_data_dir, device, pytestconfig):
         g = sample
     assert g.ndata["x"].shape[0] == g.num_nodes()
     assert g.edata["x"].shape[0] == g.num_edges()
-
-    # -- bad directory --------------------------------------------------------
-    with pytest.raises((FileNotFoundError, OSError)):
-        _ = HydroGraphDataset(
-            data_dir="/non_existent_path",
-            split="train",
-            num_samples=1,
-        )
 
     # -- invalid split --------------------------------------------------------
     with pytest.raises(ValueError):

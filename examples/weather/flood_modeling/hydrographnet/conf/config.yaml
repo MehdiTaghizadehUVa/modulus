@@ -25,7 +25,7 @@ hydra:
 
 # Data configuration: paths for training and testing datasets.
 data_dir: ./data
-test_dir: './data/Test
+test_dir: ./data/Test
 
 # Training configuration.
 batch_size: 1
@@ -58,7 +58,7 @@ num_processor_checkpoint_segments: 0
 recompute_activation: False
 
 # WandB logging configuration.
-wandb_mode: online
+wandb_mode: disabled
 watch_model: False
 
 # Checkpoint path.

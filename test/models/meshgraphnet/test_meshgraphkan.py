@@ -122,16 +122,16 @@ def test_meshgraphkan_optims(device, pytestconfig):
         )
         node_f = torch.randn(graph.num_nodes(), 3).to(device)
         edge_f = torch.randn(graph.num_edges(), 3).to(device)
-        return model, (node_f, edge_f, graph)
+        return model, [node_f, edge_f, graph]
 
     m, inp = make_inputs()
-    assert common.validate_cuda_graphs(m, *inp)
+    assert common.validate_cuda_graphs(m, (*inp,))
     m, inp = make_inputs()
-    assert common.validate_jit(m, *inp)
+    assert common.validate_jit(m, (*inp,))
     m, inp = make_inputs()
-    assert common.validate_amp(m, *inp)
+    assert common.validate_amp(m, (*inp,))
     m, inp = make_inputs()
-    assert common.validate_combo_optims(m, *inp)
+    assert common.validate_combo_optims(m, (*inp,))
 
 
 @import_or_fail("dgl")
