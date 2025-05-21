@@ -293,9 +293,7 @@ class HydroGraphDataset(DGLDataset):
     ):
 
         if split not in {"train", "test"}:
-            raise ValueError(
-                f"Invalid split '{split}'. Expected 'train' or 'test'."
-            )
+            raise ValueError(f"Invalid split '{split}'. Expected 'train' or 'test'.")
 
         # Initialize dataset attributes.
         self.data_dir = str(data_dir)
