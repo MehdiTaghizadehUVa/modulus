@@ -36,7 +36,7 @@ def hydrograph_data_dir(nfs_data_dir, tmp_path_factory):
     Make a **writable copy** of the tiny HydroGraph dataset so tests can
     freely create cache files without touching the pristine NFS copy.
     """
-    src = nfs_data_dir.joinpath("datasets/hydrograph_tiny")
+    src = nfs_data_dir.joinpath("datasets/hydrographnet_tiny")
     dst = tmp_path_factory.mktemp("hydrograph_unit_test")
     shutil.copytree(src, dst, dirs_exist_ok=True)
     return Path(dst)
