@@ -32,18 +32,18 @@ from dataclasses import dataclass
 from itertools import chain
 from typing import Callable, List, Tuple, Union
 
-import modulus  # noqa: F401 for docs
-from modulus.models.gnn_layers.mesh_edge_block import MeshEdgeBlock
-from modulus.models.gnn_layers.mesh_graph_mlp import MeshGraphMLP
-from modulus.models.gnn_layers.mesh_node_block import MeshNodeBlock
-from modulus.models.gnn_layers.utils import CuGraphCSC, set_checkpoint_fn
-from modulus.models.layers import get_activation
+import physicsnemo  # noqa: F401 for docs
+from physicsnemo.models.gnn_layers.mesh_edge_block import MeshEdgeBlock
+from physicsnemo.models.gnn_layers.mesh_graph_mlp import MeshGraphMLP
+from physicsnemo.models.gnn_layers.mesh_node_block import MeshNodeBlock
+from physicsnemo.models.gnn_layers.utils import CuGraphCSC, set_checkpoint_fn
+from physicsnemo.models.layers import get_activation
 
 # Import the Kolmogorov–Arnold Network layer.
-# Ensure that the file defining KolmogorovArnoldNetwork is accessible (e.g. modulus/models/gnn_layers/kan_layer.py)
-from modulus.models.layers.kan_layers import KolmogorovArnoldNetwork
-from modulus.models.meta import ModelMetaData
-from modulus.models.module import Module
+# Ensure that the file defining KolmogorovArnoldNetwork is accessible (e.g. physicsnemo/models/gnn_layers/kan_layer.py)
+from physicsnemo.models.layers.kan_layers import KolmogorovArnoldNetwork
+from physicsnemo.models.meta import ModelMetaData
+from physicsnemo.models.module import Module
 
 
 @dataclass

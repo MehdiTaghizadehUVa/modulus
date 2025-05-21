@@ -149,7 +149,7 @@ def download_from_url(
         logger.info(f"Using downloaded and verified file: {fpath}")
     else:
         logger.info(f"Downloading {url} to {fpath} ...")
-        with requests.get(url, stream=True, timeout=timeout) as r:
+        with requests.get(url, stream=True, timeout=120) as r:
             r.raise_for_status()
             total_size = int(r.headers.get("content-length", 0))
             with open(fpath, "wb") as f, tqdm(

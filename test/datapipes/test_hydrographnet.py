@@ -44,7 +44,7 @@ def hydrograph_data_dir(nfs_data_dir, tmp_path_factory):
 
 @import_or_fail(["dgl", "scipy", "tqdm"])
 @pytest.mark.parametrize("device", ["cuda:0", "cpu"])
-def test_hydrograph_constructor(hydrograph_data_dir, device):
+def test_hydrograph_constructor(hydrograph_data_dir, device, pytestconfig):
     """Constructor & basic iteration checks."""
 
     from physicsnemo.datapipes.gnn.hydrograph_dataset import HydroGraphDataset
