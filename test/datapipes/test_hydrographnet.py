@@ -47,7 +47,7 @@ def hydrograph_data_dir(nfs_data_dir, tmp_path_factory):
 def test_hydrograph_constructor(hydrograph_data_dir, device, pytestconfig):
     """Constructor & basic iteration checks."""
 
-    from physicsnemo.datapipes.gnn.hydrograph_dataset import HydroGraphDataset
+    from physicsnemo.datapipes.gnn.hydrographnet_dataset import HydroGraphDataset
 
     # -- build a tiny train‑split dataset ------------------------------------
     dataset = HydroGraphDataset(
