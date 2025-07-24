@@ -16,6 +16,8 @@
 
 from dataclasses import asdict
 
+import torch
+
 from physicsnemo.utils.version_check import check_module_requirements
 
 from .domino_datapipe import DoMINODataPipe
@@ -65,6 +67,9 @@ class ShardedDoMINODataPipe(DoMINODataPipe):
         **config_overrides,
     ):
 
+        # if 'gpu_output' not in config_overrides:
+        config_overrides["gpu_output"] = True
+
         # First, initialize the super class.
         super().__init__(
             input_path,
@@ -105,8 +110,8 @@ class ShardedDoMINODataPipe(DoMINODataPipe):
 
         # These keys are scalar-like and should never be sharded
         self.scalar_keys = [
-            "stream_velocity",
-            "air_density",
+            "global_params_values",
+            "global_params_reference",
             "surface_min_max",
             "volume_min_max",
             "length_scale",
@@ -122,9 +127,10 @@ class ShardedDoMINODataPipe(DoMINODataPipe):
             Replicate(),
         ]
         for key, value in single_dict.items():
-            single_dict[key] = ShardTensor.from_local(
-                value, self.domain_mesh, default_placement
-            )
+            if isinstance(value, torch.Tensor):
+                single_dict[key] = ShardTensor.from_local(
+                    value, self.domain_mesh, default_placement
+                )
 
         # # Now, shard the data.
         sharding = [

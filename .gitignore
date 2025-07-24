@@ -153,6 +153,7 @@ cython_debug/
 
 # VsCode
 .vscode/
+.cursor/
 
 # VIM
 *.swp
@@ -171,3 +172,4 @@ multirun/
 
 # SLURM
 slurm-*.out
+sbatch_logs/
