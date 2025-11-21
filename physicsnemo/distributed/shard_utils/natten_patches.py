@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -229,10 +229,9 @@ if natten_spec is not None:
         dilation = kwargs.get("dilation", 1)
         kernel_size = kwargs["kernel_size"]
 
-        if all([type(_t) == torch.Tensor for _t in (q, k, v)]):
+        if all([isinstance(_t, torch.Tensor) for _t in (q, k, v)]):
             return wrapped(*args, **kwargs)
-        elif all([type(_t) == ShardTensor for _t in (q, k, v)]):
-
+        elif all([isinstance(_t, ShardTensor) for _t in (q, k, v)]):
             return partial_na2d(q, k, v, kernel_size, dilation, base_func=wrapped)
 
         else:

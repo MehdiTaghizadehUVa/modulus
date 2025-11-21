@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -437,7 +437,6 @@ class StaticCaptureTraining(_StaticCapture):
 
 
 class StaticCaptureEvaluateNoGrad(_StaticCapture):
-
     """An performance optimization decorator for PyTorch no grad evaluation.
 
     This class should be initialized as a decorator on a function that computes run the

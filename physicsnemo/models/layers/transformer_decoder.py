@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -35,6 +35,7 @@ class TransformerDecoder(Module):
         norm: str
             Layer normalization component.
     """
+
     __constants__ = ["norm"]
 
     def __init__(self, decoder_layer, num_layers, norm=None):
@@ -98,6 +99,7 @@ class DecoderOnlyLayer(Module):
             bias. Default: ``True``.
 
     """
+
     __constants__ = ["norm_first"]
 
     def __init__(
@@ -272,7 +274,6 @@ def _detect_is_causal_mask(
 
 
 def _get_seq_len(src: Tensor, batch_first: bool) -> Optional[int]:
-
     if src.is_nested:
         return None
     else:

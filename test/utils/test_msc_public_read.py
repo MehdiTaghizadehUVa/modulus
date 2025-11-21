@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -26,7 +26,6 @@ from pytest_utils import import_or_fail
 # See the [Multi-Storage Client README](/examples/multi_storage_client/README.md) for further information.
 @import_or_fail(["multistorageclient"])
 def test_msc_read(pytestconfig):
-
     # Point at the MSC config file which specifies access information for the S3 bucket
     current_file = Path(__file__).resolve()
     current_dir = current_file.parent

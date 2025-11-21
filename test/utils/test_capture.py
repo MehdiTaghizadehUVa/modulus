@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -29,7 +29,7 @@ from physicsnemo.utils.capture import _StaticCapture
 optimizers = pytest.importorskip("apex.optimizers")
 
 Tensor = torch.Tensor
-logger = logging.getLogger("__name__")
+module_logger = logging.getLogger("__name__")
 
 
 @pytest.fixture

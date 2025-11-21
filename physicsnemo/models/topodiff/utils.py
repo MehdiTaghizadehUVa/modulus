@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -20,7 +20,6 @@ from torch.utils.data import DataLoader, Dataset
 
 class DatasetTopoDiff(Dataset):
     def __init__(self, topologies, stress, strain, load_im, constraints):
-
         self.topologies = topologies
         self.constraints = constraints
         self.image_size = topologies.shape[1]
@@ -33,7 +32,6 @@ class DatasetTopoDiff(Dataset):
         return self.topologies.shape[0]
 
     def __getitem__(self, idx):
-
         cons = self.constraints[idx]
 
         vol_frac = cons["VOL_FRAC"]

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -267,13 +267,13 @@ class ModAFNO2DLayer(AFNO2DLayer):
                 o1_im * scale_re + o1_re * scale_im + shift_im,
             )
 
-        o1_real[
-            :, total_modes - kept_modes : total_modes + kept_modes, :kept_modes
-        ] = F.relu(o1_re)
+        o1_real[:, total_modes - kept_modes : total_modes + kept_modes, :kept_modes] = (
+            F.relu(o1_re)
+        )
 
-        o1_imag[
-            :, total_modes - kept_modes : total_modes + kept_modes, :kept_modes
-        ] = F.relu(o1_im)
+        o1_imag[:, total_modes - kept_modes : total_modes + kept_modes, :kept_modes] = (
+            F.relu(o1_im)
+        )
 
         o2[
             :, total_modes - kept_modes : total_modes + kept_modes, :kept_modes, ..., 0

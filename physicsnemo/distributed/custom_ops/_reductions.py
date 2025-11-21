@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -547,7 +547,7 @@ def unpack_args(
     dim: DimT = None,
     keepdim: bool = False,
     *args: Any,
-    **kwargs: Any
+    **kwargs: Any,
 ) -> Tuple[ShardTensor, DimT, bool, Tuple[Any, ...], Dict[str, Any]]:
     """
     Unpack arguments for reduction functions.  Maps default args from torch.

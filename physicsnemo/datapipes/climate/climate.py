@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -327,18 +327,18 @@ class ClimateDatapipe(Datapipe):
     with the following structure, where {name} indicates the name of the data
     source provided:
 
-    - `state_seq-{name}`: Tensors of shape
+    - ``state_seq-{name}``: Tensors of shape
         (batch_size, num_steps, num_channels, height, width).
         This sequence is drawn from the data file and normalized if a
         statistics file is provided.
-    - `timestamps-{name}`: Tensors of shape (batch_size, num_steps), containing
+    - ``timestamps-{name}``: Tensors of shape (batch_size, num_steps), containing
         timestamps for each timestep in the sequence.
-    - `{aux_variable}-{name}`: Tensors of shape
+    - ``{aux_variable}-{name}``: Tensors of shape
         (batch_size, num_steps, aux_channels, height, width),
         containing the auxiliary variables returned by each data source
-    - `cos_zenith-{name}`: Tensors of shape (batch_size, num_steps, 1, height, width),
+    - ``cos_zenith-{name}``: Tensors of shape (batch_size, num_steps, 1, height, width),
         containing the cosine of the solar zenith angle if specified.
-    - `{invariant_name}: Tensors of shape (batch_size, invariant_channels, height, width),
+    - ``{invariant_name}``: Tensors of shape (batch_size, invariant_channels, height, width),
         containing the time-invariant data (depending only on spatial coordinates)
         returned by the datapipe. These can include e.g.
         land-sea mask and geopotential/surface elevation.
@@ -362,7 +362,7 @@ class ClimateDatapipe(Datapipe):
 
     Parameters
     ----------
-    sources: Iterable[ClimateDataSpec]
+    sources: Iterable[ClimateDataSourceSpec]
         A list of data specifications defining the sources for the climate variables
     batch_size : int, optional
         Batch size, by default 1
@@ -441,7 +441,7 @@ class ClimateDatapipe(Datapipe):
 
         # Determine outputs of pipeline
         self.pipe_outputs = []
-        for (i, spec) in enumerate(self.sources):
+        for i, spec in enumerate(self.sources):
             name = spec.name if spec.name is not None else i
             self.pipe_outputs += [f"state_seq-{name}", f"timestamps-{name}"]
             self.pipe_outputs.extend(
@@ -463,7 +463,7 @@ class ClimateDatapipe(Datapipe):
         # Load all data files and statistics
         for spec in sources:
             spec.parse_dataset_files(num_samples_per_year=num_samples_per_year)
-        for (i, spec_i) in enumerate(sources):
+        for i, spec_i in enumerate(sources):
             for spec_j in sources[i + 1 :]:
                 if not spec_i.dimensions_compatible(spec_j):
                     raise ValueError("Incompatible data sources")
@@ -801,7 +801,7 @@ class ClimateNetCDF4DaliExternalSource(ClimateDaliExternalSource):
         shape = (self.num_steps, len(self.variables)) + shape[1:]
         # TODO: this can be optimized to do the NetCDF scale/offset on GPU
         output = np.empty(shape, dtype=np.float32)
-        for (i, var) in enumerate(self.variables):
+        for i, var in enumerate(self.variables):
             v = data_file.variables[var]
             output[:, i] = v[
                 idx : idx + self.num_steps * self.stride : self.stride

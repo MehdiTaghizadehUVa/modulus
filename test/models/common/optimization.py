@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -171,11 +171,11 @@ def validate_amp(
     if str(model.device) == "cpu":
         amp_device = "cpu"
         amp_dtype = torch.bfloat16
-        scaler = torch.cuda.amp.GradScaler(enabled=False)
+        scaler = torch.amp.GradScaler("cpu", enabled=False)
     else:
         amp_device = "cuda"
         amp_dtype = torch.float16
-        scaler = torch.cuda.amp.GradScaler(enabled=True)
+        scaler = torch.amp.GradScaler("cuda", enabled=True)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
@@ -321,18 +321,20 @@ def validate_combo_optims(
         """Mini-forward function to capture in cuda graph if needed"""
         # Test AMP
         # This is a conditional context statement: https://stackoverflow.com/a/34798330
-        with torch.autocast(
-            amp_device, enabled=True, dtype=amp_dtype
-        ) if model.meta.amp else nullcontext():
+        with (
+            torch.autocast(amp_device, enabled=True, dtype=amp_dtype)
+            if model.meta.amp
+            else nullcontext()
+        ):
             optimizer.zero_grad()
             output = fwd_model(*in_args)
             loss = dummy_loss_fn(output)
             scaler.scale(loss).backward()
 
     # Warmup stream (if cuda graphs)
-    with torch.cuda.stream(
-        torch.cuda.Stream()
-    ) if cuda_graphs_enabled else nullcontext():
+    with (
+        torch.cuda.stream(torch.cuda.Stream()) if cuda_graphs_enabled else nullcontext()
+    ):
         for i in range(warmup_length):
             foward(in_args)
             scaler.step(optimizer)

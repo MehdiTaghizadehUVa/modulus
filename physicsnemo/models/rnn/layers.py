@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -114,9 +114,10 @@ class _ConvLayer(nn.Module):
             x = F.pad(x, [pad_w // 2, pad_w - pad_w // 2], mode="constant", value=0.0)
         elif input_length == 2:
             ih, iw = x.size()[-2:]
-            pad_h, pad_w = _get_same_padding(
-                ih, self.kernel_size, self.stride
-            ), _get_same_padding(iw, self.kernel_size, self.stride)
+            pad_h, pad_w = (
+                _get_same_padding(ih, self.kernel_size, self.stride),
+                _get_same_padding(iw, self.kernel_size, self.stride),
+            )
             x = F.pad(
                 x,
                 [pad_h // 2, pad_h - pad_h // 2, pad_w // 2, pad_w - pad_w // 2],
@@ -244,11 +245,14 @@ class _TransposeConvLayer(nn.Module):
             ]
         elif input_length == 2:
             ih, iw = orig_x.size()[-2:]
-            pad_h, pad_w = _get_same_padding(
-                ih,
-                self.kernel_size,
-                self.stride,
-            ), _get_same_padding(iw, self.kernel_size, self.stride)
+            pad_h, pad_w = (
+                _get_same_padding(
+                    ih,
+                    self.kernel_size,
+                    self.stride,
+                ),
+                _get_same_padding(iw, self.kernel_size, self.stride),
+            )
             x = x[
                 :,
                 :,
@@ -459,11 +463,14 @@ class _ConvResidualBlock(nn.Module):
                 )
             elif len(orig_x.size()) - 2 == 2:
                 ih, iw = orig_x.size()[-2:]
-                pad_h, pad_w = _get_same_padding(
-                    ih,
-                    2,
-                    2,
-                ), _get_same_padding(iw, 2, 2)
+                pad_h, pad_w = (
+                    _get_same_padding(
+                        ih,
+                        2,
+                        2,
+                    ),
+                    _get_same_padding(iw, 2, 2),
+                )
                 pool = torch.nn.AvgPool2d(
                     2, 2, padding=(pad_h // 2, pad_w // 2), count_include_pad=False
                 )

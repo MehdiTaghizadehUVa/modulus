@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -338,12 +338,13 @@ def test_song_unet_grad_checkpointing(device):
         computed_grads_checkpointed[name] = param.grad.clone()
 
     # Check that the results are the same
-    assert torch.allclose(
-        y_pred_checkpointed, y_pred
-    ), "Outputs do not match. Checkpointing failed!"
+    assert torch.allclose(y_pred_checkpointed, y_pred), (
+        "Outputs do not match. Checkpointing failed!"
+    )
 
     # Compare the gradients
     for name in computed_grads:
-        torch.allclose(
-            computed_grads_checkpointed[name], computed_grads[name]
-        ), "Gradient do not match. Checkpointing failed!"
+        (
+            torch.allclose(computed_grads_checkpointed[name], computed_grads[name]),
+            "Gradient do not match. Checkpointing failed!",
+        )

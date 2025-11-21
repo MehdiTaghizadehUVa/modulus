@@ -136,7 +136,9 @@ For PhysicsNeMo development, [pre-commit](https://pre-commit.com/) is **required
 This will not only help developers pass the CI pipeline, but also accelerate reviews.
 Contributions that have not used pre-commit will *not be reviewed*.
 
-To install `pre-commit` follow the below steps inside the PhysicsNeMo repository folder:
+`pre-commit` is installed as part of the `dev` optional dependencies defined in `pyproject.toml`.
+To install `pre-commit` in an existing environment, follow the below steps inside the PhysicsNeMo
+repository folder:
 
 ```bash
 pip install pre-commit
@@ -146,19 +148,18 @@ pre-commit install
 Once the above commands are executed, the pre-commit hooks will be activated and all
 the commits will be checked for appropriate formatting.
 
-### CI
+### Continuous Integration (CI)
 
-To ensure quality of the code, your merge request will pass through several CI checks.
+To ensure quality of the code, your merge request (MR) will pass through several CI checks.
 It is mandatory for your MRs to pass these pipelines to ensure a successful merge.
 Please keep checking this document for the latest guidelines on pushing code. Currently,
 The pipeline has following stages:
 
 1. `format`
-    *Pre-commit will check this for you!*
-    Checks for formatting of your python code.
-    Refer [black](https://black.readthedocs.io/en/stable/) for more information.
-    If your MR fails this test, run `black <script-name>.py` on problematic scripts and
-    black will take care of the rest.
+    *Pre-commit will check this for you!* Checks for formatting of your
+    Python code, using `ruff format` via [Ruff](https://docs.astral.sh/ruff/).
+    If your MR fails this test, run `ruff format <script-name>.py` on
+    problematic scripts and Ruff will take care of the rest.
 
 2. `interrogate`
    *Pre-commit will check this for you!*
@@ -195,12 +196,15 @@ The pipeline has following stages:
 
 3. `lint`
     *Pre-commit will check this for you!*
-    Linters will perform static analysis to check the style, complexity, errors and more.
-    For markdown files `markdownlint` is used, its suggested to use the vscode,
-    neovim or sublime [extensions](https://github.com/DavidAnson/markdownlint#related).
-    PhysicsNeMo uses [Ruff](https://docs.astral.sh/ruff/) for linting of various types.
-    Currently we use flake8/pycodestyle (`E`), Pyflakes (`F`), flake8-bandit (`S`),
-    isort (`I`), and performance 'PERF' rules with the isort rules being fixable.
+    Linters will perform static analysis to check the style, complexity, errors
+    and more. For markdown files `markdownlint` is used, its suggested to use
+    the vscode, neovim or sublime
+    [extensions](https://github.com/DavidAnson/markdownlint#related).
+    PhysicsNeMo uses `ruff check` via[Ruff](https://docs.astral.sh/ruff/) for
+    linting of various types. Currently we use flake8/pycodestyle (`E`),
+    Pyflakes (`F`), flake8-bandit (`S`), isort (`I`), and performance 'PERF'
+    rules. Many rule violations will be automatically fixed by Ruff; others may
+    require manual changes.
 
 4. `license`
     *Pre-commit will check this for you!*

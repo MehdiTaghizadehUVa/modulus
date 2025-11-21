@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -157,7 +157,6 @@ class VortexSheddingRe300To1000Dataset(DGLDataset):
     def __init__(
         self, name="dataset", data_dir="dataset", split="train", verbose=False
     ):
-
         super().__init__(
             name=name,
             verbose=verbose,

@@ -2,7 +2,7 @@
 # ruff: noqa: E402
 
 # © Copyright 2023 HP Development Company, L.P.
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -760,9 +760,7 @@ class LearnedSimulator(Module):
         num_velocities = velocity_sequence.shape[1]
         velocity_sequence_noise = torch.empty(
             velocity_sequence.shape, dtype=velocity_sequence.dtype
-        ).normal_(
-            mean=0, std=noise_std_last_step / num_velocities**0.5
-        )  # float
+        ).normal_(mean=0, std=noise_std_last_step / num_velocities**0.5)  # float
 
         # Apply the random walk
         velocity_sequence_noise = torch.cumsum(velocity_sequence_noise, dim=1)

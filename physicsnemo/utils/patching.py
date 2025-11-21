@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -183,7 +183,6 @@ class RandomPatching2D(BasePatching2D):
     def __init__(
         self, img_shape: Tuple[int, int], patch_shape: Tuple[int, int], patch_num: int
     ) -> None:
-
         super().__init__(img_shape, patch_shape)
         self._patch_num = patch_num
         # Generate the indices of the patches to extract

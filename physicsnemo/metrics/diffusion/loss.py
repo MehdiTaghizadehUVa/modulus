@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -203,8 +203,9 @@ class EDMLoss:
         Mean value for `sigma` computation, by default -1.2.
     P_std: float, optional:
         Standard deviation for `sigma` computation, by default 1.2.
-    sigma_data: float, optional
-        Standard deviation for data, by default 0.5.
+    sigma_data: float | torch.Tensor, optional
+        Standard deviation for data, by default 0.5. Can also be a tensor; to use
+        per-channel sigma_data, pass a tensor of shape (1, number_of_channels, 1, 1).
 
     Note
     ----
@@ -214,21 +215,47 @@ class EDMLoss:
     """
 
     def __init__(
-        self, P_mean: float = -1.2, P_std: float = 1.2, sigma_data: float = 0.5
+        self,
+        P_mean: float = -1.2,
+        P_std: float = 1.2,
+        sigma_data: float | torch.Tensor = 0.5,
     ):
         self.P_mean = P_mean
         self.P_std = P_std
         self.sigma_data = sigma_data
 
-    def __call__(self, net, images, condition=None, labels=None, augment_pipe=None):
+    def get_noise_level(self, y: torch.Tensor) -> torch.Tensor:
+        """Sample the sigma noise parameter for each sample."""
+        shape = (y.shape[0], 1, 1, 1)
+        rnd_normal = torch.randn(shape, device=y.device)
+        sigma = (rnd_normal * self.P_std + self.P_mean).exp()
+        return sigma
+
+    def get_loss_weight(self, y: torch.Tensor, sigma: torch.Tensor) -> torch.Tensor:
+        """Compute loss weight for each sample."""
+        weight = (sigma**2 + self.sigma_data**2) / (sigma * self.sigma_data) ** 2
+        return weight
+
+    def sample_noise(self, y: torch.Tensor, sigma: torch.Tensor) -> torch.Tensor:
+        """Sample the noise."""
+        return torch.randn_like(y) * sigma
+
+    def __call__(
+        self,
+        net: torch.nn.Module,
+        images: torch.Tensor,
+        condition: torch.Tensor | None = None,
+        labels: torch.Tensor | None = None,
+        augment_pipe: Callable | None = None,
+        lead_time_label: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """
         Calculate and return the loss corresponding to the EDM formulation.
 
         The method adds random noise to the input images and calculates the loss as the
         square difference between the network's predictions and the input images.
-        The noise level is determined by 'sigma', which is computed as a function of
-        'P_mean' and 'P_std' random values. The calculated loss is weighted as a
-        function of 'sigma' and 'sigma_data'.
+        The noise level is determined by 'sigma', which is drawn from the `get_noise_level`
+        function. The calculated loss is weighted as a function of 'sigma' and 'sigma_data'.
 
         Parameters:
         ----------
@@ -238,6 +265,9 @@ class EDMLoss:
         images: torch.Tensor
             Input images to the neural network.
 
+        condition: torch.Tensor
+            Condition to be passed to the `condition` argument of `net.forward`.
+
         labels: torch.Tensor
             Ground truth labels for the input images.
 
@@ -245,31 +275,74 @@ class EDMLoss:
             An optional data augmentation function that takes images as input and
             returns augmented images. If not provided, no data augmentation is applied.
 
+        lead_time_label: torch.Tensor, optional
+            Lead-time labels to pass to the model, shape ``(batch_size,)``.
+            If not provided, the model is called without a lead-time label input.
+
         Returns:
         -------
         torch.Tensor
             A tensor representing the loss calculated based on the network's
             predictions.
         """
-        rnd_normal = torch.randn([images.shape[0], 1, 1, 1], device=images.device)
-        sigma = (rnd_normal * self.P_std + self.P_mean).exp()
-        weight = (sigma**2 + self.sigma_data**2) / (sigma * self.sigma_data) ** 2
         y, augment_labels = (
             augment_pipe(images) if augment_pipe is not None else (images, None)
         )
-        n = torch.randn_like(y) * sigma
+        sigma = self.get_noise_level(y)
+        weight = self.get_loss_weight(y, sigma)
+        n = self.sample_noise(y, sigma)
+
+        optional_args = {
+            "augment_labels": augment_labels,
+            "lead_time_label": lead_time_label,
+        }
+        # drop None items to support models that don't have these arguments in `forward`
+        optional_args = {k: v for (k, v) in optional_args.items() if v is not None}
         if condition is not None:
             D_yn = net(
                 y + n,
                 sigma,
                 condition=condition,
                 class_labels=labels,
-                augment_labels=augment_labels,
+                **optional_args,
             )
         else:
-            D_yn = net(y + n, sigma, labels, augment_labels=augment_labels)
+            D_yn = net(y + n, sigma, labels, **optional_args)
         loss = weight * ((D_yn - y) ** 2)
         return loss
+
+
+class EDMLossLogUniform(EDMLoss):
+    """
+    EDM Loss with log-uniform sampling for `sigma`.
+
+    Parameters
+    ----------
+    sigma_min: float, optional
+        Minimum value for `sigma` computation, by default 0.02.
+    sigma_max: float, optional:
+        Minimum value for `sigma` computation, by default 1000.
+    sigma_data: float | torch.Tensor, optional
+        Standard deviation for data, by default 0.5. Can also be a tensor; to use
+        per-channel sigma_data, pass a tensor of shape (1, number_of_channels, 1, 1).
+    """
+
+    def __init__(
+        self,
+        sigma_min: float = 0.02,
+        sigma_max: float = 1000,
+        sigma_data: float | torch.Tensor = 0.5,
+    ):
+        self.sigma_data = sigma_data
+        self.log_sigma_min = float(np.log(sigma_min))
+        self.log_sigma_diff = float(np.log(sigma_max)) - self.log_sigma_min
+
+    def get_noise_level(self, y: torch.Tensor) -> torch.Tensor:
+        """Sample the sigma noise parameter for each sample."""
+        shape = (y.shape[0], 1, 1, 1)
+        rnd_uniform = torch.rand(shape, device=y.device)
+        sigma = (self.log_sigma_min + rnd_uniform * self.log_sigma_diff).exp()
+        return sigma
 
 
 class EDMLossSR:
@@ -476,7 +549,7 @@ class ResidualLoss:
     regression with denoising score matching. It uses a pre-trained regression
     network to compute residuals before applying the diffusion process.
 
-    Attributes
+    Parameters
     ----------
     regression_net : torch.nn.Module
         The regression network used for computing residuals.
@@ -540,6 +613,32 @@ class ResidualLoss:
         self.sigma_data = sigma_data
         self.hr_mean_conditioning = hr_mean_conditioning
         self.y_mean = None
+
+    def get_noise_params(self, y: Tensor) -> Tensor:
+        """
+        Compute the noise parameters to apply denoising score matching.
+
+        Parameters
+        ----------
+        y : torch.Tensor
+            Latent state of shape :math:`(B, *)`. Only used to determine the shape of
+            the noise and create tensors on the same device.
+
+        Returns
+        -------
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+            - Noise ``n`` of shape :math:`(B, *)` to be added to the latent state.
+            - Noise level ``sigma`` of shape :math:`(B, 1, 1, 1)`.
+            - Weight ``weight`` of shape :math:`(B, 1, 1, 1)` to multiply the loss.
+        """
+        # Sample noise level
+        rnd_normal = torch.randn([y.shape[0], 1, 1, 1], device=y.device)
+        sigma = (rnd_normal * self.P_std + self.P_mean).exp()
+        # Loss weight
+        weight = (sigma**2 + self.sigma_data**2) / (sigma * self.sigma_data) ** 2
+        # Sample noise
+        n = torch.randn_like(y) * sigma
+        return n, sigma, weight
 
     def __call__(
         self,
@@ -735,17 +834,12 @@ class ResidualLoss:
             y = y_patched
             y_lr = y_lr_patched
 
-        # Noise
-        rnd_normal = torch.randn([y.shape[0], 1, 1, 1], device=img_clean.device)
-        sigma = (rnd_normal * self.P_std + self.P_mean).exp()
-        weight = (sigma**2 + self.sigma_data**2) / (sigma * self.sigma_data) ** 2
-
-        # Input + noise
-        latent = y + torch.randn_like(y) * sigma
+        # Add noise to the latent state
+        n, sigma, weight = self.get_noise_params(y)
 
         if lead_time_label is not None:
             D_yn = net(
-                latent,
+                y + n,
                 y_lr,
                 sigma,
                 embedding_selector=None,
@@ -759,7 +853,7 @@ class ResidualLoss:
             )
         else:
             D_yn = net(
-                latent,
+                y + n,
                 y_lr,
                 sigma,
                 embedding_selector=None,

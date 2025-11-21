@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -950,7 +950,6 @@ class CoupledTimeSeriesDataModule(TimeSeriesDataModule):
         )
 
     def _get_coupled_vars(self):
-
         coupled_variables = []
         for d in self.couplings:
             coupled_variables = coupled_variables + d["params"]["variables"]

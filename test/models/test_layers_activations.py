@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -145,9 +145,9 @@ def test_activation_fused_silu(device):
     )
 
     input = torch.randn(20, 20, dtype=torch.double, requires_grad=True, device=device)
-    assert torch.autograd.gradcheck(
-        FusedSiLU.apply, input, eps=1e-6, atol=1e-4
-    ), "Failed FusedSiLU autograd check"
+    assert torch.autograd.gradcheck(FusedSiLU.apply, input, eps=1e-6, atol=1e-4), (
+        "Failed FusedSiLU autograd check"
+    )
 
     assert torch.autograd.gradcheck(
         FusedSiLU_deriv_1.apply, input, eps=1e-6, atol=1e-4

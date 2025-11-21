@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -540,7 +540,6 @@ class DistributedManager(object):
         if key in self._mesh_groups.keys():
             return self._mesh_groups[key]
         else:
-
             if mesh.ndim != 1:
                 # We need to get all ranks in this mesh and spawn a group.
                 # The mesh.mesh object is a GPU tensor and using it will block.
@@ -763,7 +762,6 @@ class DistributedManager(object):
     def create_groups_from_config(
         config: ProcessGroupConfig, verbose: bool = False
     ):  # pragma: no cover
-
         if torch.__version__ > "2.4":
             warnings.warn(
                 "DistributedManager.create_groups_from_config is no longer the most simple "
@@ -802,8 +800,14 @@ class DistributedManager(object):
 
     @atexit.register
     @staticmethod
-    def cleanup():
-        """Clean up distributed group and singleton"""
+    def cleanup(barrier: bool = False):
+        """Clean up distributed group and singleton
+
+        Parameters
+        ----------
+        barrier : bool, optional
+            Whether to use a global barrier before destroying the process group, by default False
+        """
         # Destroying group.WORLD is enough for all process groups to get destroyed
         if (
             "_is_initialized" in DistributedManager._shared_state
@@ -811,9 +815,10 @@ class DistributedManager(object):
             and "_distributed" in DistributedManager._shared_state
             and DistributedManager._shared_state["_distributed"]
         ):
-            if torch.cuda.is_available():
-                dist.barrier(device_ids=[DistributedManager().local_rank])
-            else:
-                dist.barrier()
+            if barrier:
+                if torch.cuda.is_available():
+                    dist.barrier(device_ids=[DistributedManager().local_rank])
+                else:
+                    dist.barrier()
             dist.destroy_process_group()
         DistributedManager._shared_state = {}

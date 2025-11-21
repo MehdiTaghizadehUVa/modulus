@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -194,9 +194,7 @@ class _DLWPWrapper(torch.nn.Module):
                     self.latgrid,
                 ),
                 0,
-            ) - (
-                1 / np.pi
-            )  # subtract mean value
+            ) - (1 / np.pi)  # subtract mean value
             tisr = (
                 torch.tensor(tisr, dtype=dtype)
                 .to(device)

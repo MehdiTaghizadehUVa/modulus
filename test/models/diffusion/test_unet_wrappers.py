@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -84,9 +84,9 @@ def test_unet_fp16_forwards(device):
     output_fp32 = model_fp32(x=input_image, img_lr=lr_image)
 
     assert output_fp16.shape == (1, outc, res, res)
-    assert torch.allclose(
-        output_fp16, output_fp32, rtol=1e-3, atol=1e-3
-    ), "FP16 and FP32 outputs differ more than allowed"
+    assert torch.allclose(output_fp16, output_fp32, rtol=1e-3, atol=1e-3), (
+        "FP16 and FP32 outputs differ more than allowed"
+    )
 
     # Construct the StormCastUNet model
     model = StormCastUNet(
@@ -254,58 +254,3 @@ def test_unet_backward_compat(device):
             )
         )
     )
-
-
-# TODO: Disabled for now, to be enabled after refactoring GN
-# @pytest.mark.parametrize("device", ["cuda:0"])
-# def test_unet_from_checkpoint_override(device):
-#     """Test UNet wrapper checkpoint save/load with override"""
-
-#     from physicsnemo.models.diffusion.layers import ApexGroupNorm, GroupNorm
-
-#     def _check_use_apex_gn(model, value):
-#         if hasattr(model, "use_apex_gn"):
-#             assert model.use_apex_gn == value, f"use_apex_gn should be {value}"
-
-#     def _check_gn_type(model, value):
-#         if isinstance(model, ApexGroupNorm) and ApexGroupNorm is not value:
-#             raise ValueError("gn type should be GroupNorm, but found ApexGroupNorm")
-#         elif isinstance(model, GroupNorm) and GroupNorm is not value:
-#             raise ValueError("gn type should be ApexGroupNorm, but found GroupNorm")
-#         else:
-#             pass
-
-#     orig_model = UNet(
-#         img_resolution=16,
-#         img_in_channels=2,
-#         img_out_channels=2,
-#         model_type="SongUNet",
-#         model_channels=4,
-#         channel_mult=[1, 2],
-#         channel_mult_emb=2,
-#         num_blocks=2,
-#         attn_resolutions=[8],
-#         use_apex_gn=False,
-#         profile_mode=False,
-#         amp_mode=False,
-#     ).to(device)
-
-#     orig_model.apply(lambda m: _check_use_apex_gn(m, False))
-#     orig_model.apply(lambda m: _check_gn_type(m, GroupNorm))
-#     orig_model.save("checkpoint.mdlus")
-
-#     # Override use_apex_gn: allowed
-#     loaded_model = UNet.from_checkpoint(
-#         "checkpoint.mdlus", override_args={"use_apex_gn": True}
-#     )
-#     loaded_model.apply(lambda m: _check_use_apex_gn(m, True))
-#     loaded_model.apply(lambda m: _check_gn_type(m, ApexGroupNorm))
-#     # TODO: add test to make sure state dict is from checkpoint, not from
-#     # override
-
-#     # Override profile mode or amp mode: disallowed
-#     with pytest.raises(ValueError):
-#         UNet.from_checkpoint("checkpoint.mdlus", override_args={"profile_mode": True})
-#     with pytest.raises(ValueError):
-#         UNet.from_checkpoint("checkpoint.mdlus", override_args={"amp_mode": True})
-#     Path("checkpoint.mdlus").unlink(missing_ok=False)

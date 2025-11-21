@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -19,7 +19,7 @@ import os
 import pytest
 import torch
 import torch.nn as nn
-from distributed_utils_for_testing import modify_environment
+from pytest_utils import modify_environment
 
 from physicsnemo.distributed import (
     DistributedManager,
@@ -31,7 +31,6 @@ from physicsnemo.distributed.utils import _reduce
 
 
 def test_modify_environment():
-
     keys = ["RANK", "WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT", "LOCAL_RANK"]
     # Set the values to nonsense for testing:
     values = [f"{i}" for i in range(len(keys))]
@@ -56,7 +55,6 @@ def test_modify_environment():
 
 
 def run_test_reduce_loss(rank, world_size):
-
     with modify_environment(
         RANK=f"{rank}",
         WORLD_SIZE=f"{world_size}",
@@ -97,7 +95,6 @@ def run_test_mark_shared(rank, world_size):
         MASTER_PORT=str(12355),
         LOCAL_RANK=f"{rank % torch.cuda.device_count()}",
     ):
-
         DistributedManager._shared_state = {}
         DistributedManager.initialize()
         DistributedManager.create_process_subgroup(
@@ -231,7 +228,7 @@ def run_test_mark_shared(rank, world_size):
         DistributedManager.cleanup()
 
 
-@pytest.mark.multigpu
+@pytest.mark.multigpu_dynamic
 def test_reduce_loss():
     num_gpus = torch.cuda.device_count()
     assert num_gpus > 1
@@ -248,7 +245,7 @@ def test_reduce_loss():
     )
 
 
-@pytest.mark.multigpu
+@pytest.mark.multigpu_dynamic
 def test_mark_shared():
     num_gpus = torch.cuda.device_count()
     assert num_gpus > 1

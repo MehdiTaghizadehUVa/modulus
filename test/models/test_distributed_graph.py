@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -127,7 +127,6 @@ def run_test_distributed_graph(
     partition_scheme: str,
     use_torchrun: bool = False,
 ):
-
     from physicsnemo.models.gnn_layers import (
         DistributedGraph,
         partition_graph_by_coordinate_bbox,
@@ -344,10 +343,9 @@ def run_test_distributed_graph(
 
 
 @import_or_fail("dgl")
-@pytest.mark.multigpu
+@pytest.mark.multigpu_dynamic
 @pytest.mark.parametrize("partition_scheme", ["lat_lon_bbox", "default"])
 def test_distributed_graph(partition_scheme, pytestconfig):
-
     num_gpus = torch.cuda.device_count()
     assert num_gpus >= 2, "Not enough GPUs available for test"
     world_size = 2  # num_gpus
@@ -367,7 +365,6 @@ def test_distributed_graph(partition_scheme, pytestconfig):
 
 
 if __name__ == "__main__":
-
     # to be launched with torchrun
     DistributedManager.initialize()
     run_test_distributed_graph(-1, -1, "lat_lon_bbox", True)

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -613,9 +613,12 @@ class UNet(Module):
         )
 
         # Construct the decoder
-        decoder_feature_maps = feature_map_channels[::-1][
-            1:
-        ]  # Reverse and discard the first channel
+        if num_conv_blocks > 1:
+            decoder_feature_maps = feature_map_channels[::-1][
+                1:
+            ]  # Reverse and discard the first channel
+        else:
+            decoder_feature_maps = feature_map_channels[::-1]
         self.decoder = DecoderBlock(
             out_channels=out_channels,
             feature_map_channels=decoder_feature_maps,

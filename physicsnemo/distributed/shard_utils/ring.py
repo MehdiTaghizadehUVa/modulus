@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -116,7 +116,6 @@ def perform_ring_iteration(
         tensor_recv = torch.empty(recv_shape, dtype=dtype, device=device)
 
     if ring_config.communication_method == "p2p":
-
         p2p_op_list = []
         torch.cuda.set_device(tensor.device)
 

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -44,13 +44,16 @@ def run_test_distributed_meshgraphnet(rank, world_size, dtype, partition_scheme)
     os.environ["WORLD_SIZE"] = f"{world_size}"
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = str(12355)
+    local_rank = rank % torch.cuda.device_count()
+    os.environ["LOCAL_RANK"] = f"{local_rank}"
 
     DistributedManager.initialize()
+
+    manager = DistributedManager()
     DistributedManager.create_process_subgroup(
         name="graph_partition",
         size=world_size,
     )
-    manager = DistributedManager()
     assert manager.is_initialized() and manager._distributed
 
     model_kwds = {
@@ -219,9 +222,9 @@ def run_test_distributed_meshgraphnet(rank, world_size, dtype, partition_scheme)
     diff = out_single_gpu_dist - out_multi_gpu
     diff = torch.abs(diff)
     mask = diff > atol
-    assert torch.allclose(
-        out_single_gpu_dist, out_multi_gpu, atol=atol, rtol=rtol
-    ), f"{mask.sum()} elements have diff > {atol} \n {out_single_gpu_dist[mask]} \n {out_multi_gpu[mask]}"
+    assert torch.allclose(out_single_gpu_dist, out_multi_gpu, atol=atol, rtol=rtol), (
+        f"{mask.sum()} elements have diff > {atol} \n {out_single_gpu_dist[mask]} \n {out_multi_gpu[mask]}"
+    )
 
     # compare data gradient
     nfeat_grad_single_gpu_dist = graph_multi_gpu.get_src_node_features_in_partition(
@@ -232,7 +235,9 @@ def run_test_distributed_meshgraphnet(rank, world_size, dtype, partition_scheme)
     mask = diff > atol
     assert torch.allclose(
         nfeat_multi_gpu.grad, nfeat_grad_single_gpu_dist, atol=atol_w, rtol=rtol_w
-    ), f"{mask.sum()} elements have diff > {atol} \n {nfeat_grad_single_gpu_dist[mask]} \n {nfeat_multi_gpu.grad[mask]}"
+    ), (
+        f"{mask.sum()} elements have diff > {atol} \n {nfeat_grad_single_gpu_dist[mask]} \n {nfeat_multi_gpu.grad[mask]}"
+    )
 
     # compare model gradients (ensure correctness of backward)
     model_multi_gpu_parameters = list(model_multi_gpu.parameters())
@@ -245,19 +250,22 @@ def run_test_distributed_meshgraphnet(rank, world_size, dtype, partition_scheme)
             model_multi_gpu_parameters[param_idx].grad,
             atol=atol_w,
             rtol=rtol_w,
-        ), f"{mask.sum()} for param[{param_idx}].grad elements have diff > {atol_w} with a avg. diff of {diff[mask].mean().item()} ({diff.mean().item()} overall)"
+        ), (
+            f"{mask.sum()} for param[{param_idx}].grad elements have diff > {atol_w} with a avg. diff of {diff[mask].mean().item()} ({diff.mean().item()} overall)"
+        )
 
     # cleanup distributed
     del os.environ["RANK"]
     del os.environ["WORLD_SIZE"]
     del os.environ["MASTER_ADDR"]
     del os.environ["MASTER_PORT"]
+    del os.environ["LOCAL_RANK"]
 
     DistributedManager.cleanup()
 
 
 @import_or_fail("dgl")
-@pytest.mark.multigpu
+@pytest.mark.multigpu_dynamic
 @pytest.mark.parametrize(
     "partition_scheme", ["mapping", "nodewise", "coordinate_bbox", "none"]
 )
@@ -265,7 +273,7 @@ def run_test_distributed_meshgraphnet(rank, world_size, dtype, partition_scheme)
 def test_distributed_meshgraphnet(dtype, partition_scheme, pytestconfig):
     num_gpus = torch.cuda.device_count()
     assert num_gpus >= 2, "Not enough GPUs available for test"
-    world_size = 2
+    world_size = num_gpus
 
     torch.multiprocessing.set_start_method("spawn", force=True)
 

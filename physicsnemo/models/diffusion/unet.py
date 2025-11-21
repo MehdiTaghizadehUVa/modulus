@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -240,7 +240,8 @@ class UNet(Module):  # TODO a lot of redundancy, need to clean up
         ValueError
             If `value` is not a boolean.
         """
-        if not isinstance(value, bool):
+        # NOTE: allow 0/1 values for older checkpoints
+        if not (isinstance(value, bool) or value in [0, 1]):
             raise ValueError(
                 f"`use_fp16` must be a boolean, but got {type(value).__name__}."
             )
@@ -257,7 +258,6 @@ class UNet(Module):  # TODO a lot of redundancy, need to clean up
         force_fp32: bool = False,
         **model_kwargs: dict,
     ) -> torch.Tensor:
-
         # SR: concatenate input channels
         if img_lr is not None:
             x = torch.cat((x, img_lr), dim=1)
@@ -277,7 +277,7 @@ class UNet(Module):  # TODO a lot of redundancy, need to clean up
 
         if (F_x.dtype != dtype) and not torch.is_autocast_enabled():
             raise ValueError(
-                f"Expected the dtype to be {dtype}, " f"but got {F_x.dtype} instead."
+                f"Expected the dtype to be {dtype}, but got {F_x.dtype} instead."
             )
 
         # skip connection

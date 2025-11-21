@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -20,6 +20,7 @@ from typing import Callable, Optional
 import torch
 from torch import Tensor
 
+from physicsnemo.models.diffusion import EDMPrecond
 from physicsnemo.utils.patching import GridPatching2D
 
 
@@ -33,9 +34,19 @@ def _apply_wrapper_Cin_channels(patching, input, additional_input=None):
 
 
 @torch.compile()
-def _apply_wrapper_Cout_channels(patching, input, additional_input=None):
+def _apply_wrapper_Cout_channels_no_grad(patching, input, additional_input=None):
     """
-    Apply the patching operation to the input tensor with :math:`C_{out}` channels.
+    Apply the patching operation to an input tensor with :math:`C_{out}`
+    channels that does not require gradients.
+    """
+    return patching.apply(input=input, additional_input=additional_input)
+
+
+@torch.compile()
+def _apply_wrapper_Cout_channels_grad(patching, input, additional_input=None):
+    """
+    Apply the patching operation to an input tensor with :math:`C_{out}`
+    channels that requires gradients.
     """
     return patching.apply(input=input, additional_input=additional_input)
 
@@ -43,6 +54,25 @@ def _apply_wrapper_Cout_channels(patching, input, additional_input=None):
 @torch.compile()
 def _fuse_wrapper(patching, input, batch_size):
     return patching.fuse(input=input, batch_size=batch_size)
+
+
+def _apply_wrapper_select(
+    input: torch.Tensor, patching: GridPatching2D | None
+) -> Callable:
+    """
+    Select the correct patching wrapper based on the input tensor's requires_grad attribute.
+    If patching is None, return the identity function.
+    If patching is not None, return the appropriate patching wrapper.
+    If input.requires_grad is True, return _apply_wrapper_Cout_channels_grad.
+    If input.requires_grad is False, return _apply_wrapper_Cout_channels_no_grad.
+    """
+    if patching:
+        if input.requires_grad:
+            return _apply_wrapper_Cout_channels_grad
+        else:
+            return _apply_wrapper_Cout_channels_no_grad
+    else:
+        return lambda patching, input, additional_input=None: input
 
 
 def stochastic_sampler(
@@ -83,7 +113,7 @@ def stochastic_sampler(
             - **class_labels** (*torch.Tensor, optional*): Optional class labels
             - **lead_time_label** (*torch.Tensor, optional*): Optional lead time labels
             - **embedding_selector** (*callable, optional*): Function to select
-            positional embeddings. Used for patch-based diffusion.
+              positional embeddings. Used for patch-based diffusion.
 
         Output:
             - **denoised** (*torch.Tensor*): Denoised prediction of shape :math:`(B, C_{out}, H, W)`
@@ -217,10 +247,16 @@ def stochastic_sampler(
         def patch_embedding_selector(emb):
             # emb: (N_pe, image_shape_y, image_shape_x)
             # return: (batch_size * patch_num, N_pe, patch_shape_y, patch_shape_x)
-            return patching.apply(emb[None].expand(batch_size, -1, -1, -1))
+            return patching.apply(emb.expand(batch_size, -1, -1, -1))
 
     else:
         patch_embedding_selector = None
+
+    optional_args = {}
+    if lead_time_label is not None:
+        optional_args["lead_time_label"] = lead_time_label
+    if patching:
+        optional_args["embedding_selector"] = patch_embedding_selector
 
     # Main sampling loop.
     x_next = latents * t_steps[0]
@@ -235,22 +271,20 @@ def stochastic_sampler(
         # Euler step. Perform patching operation on score tensor if patch-based
         # generation is used denoised = net(x_hat, t_hat,
         # class_labels,lead_time_label=lead_time_label).to(torch.float64)
-        x_hat_batch = (
-            _apply_wrapper_Cout_channels(patching=patching, input=x_hat)
-            if patching
-            else x_hat
+        x_hat_batch = _apply_wrapper_select(input=x_hat, patching=patching)(
+            patching=patching, input=x_hat
         ).to(latents.device)
 
         x_lr = x_lr.to(latents.device)
 
-        if lead_time_label is not None:
+        if isinstance(net, EDMPrecond):
+            # Conditioning info is passed as keyword arg
             denoised = net(
                 x_hat_batch,
-                x_lr,
                 t_hat,
-                class_labels,
-                lead_time_label=lead_time_label,
-                embedding_selector=patch_embedding_selector,
+                condition=x_lr,
+                class_labels=class_labels,
+                **optional_args,
             )
         else:
             denoised = net(
@@ -258,8 +292,9 @@ def stochastic_sampler(
                 x_lr,
                 t_hat,
                 class_labels,
-                embedding_selector=patch_embedding_selector,
+                **optional_args,
             )
+
         if patching:
             # Un-patch the denoised image
             # (batch_size, C_out, img_shape_y, img_shape_x)
@@ -274,20 +309,18 @@ def stochastic_sampler(
         if i < num_steps - 1:
             # Patched input
             # (batch_size * patch_num, C_out, patch_shape_y, patch_shape_x)
-            x_next_batch = (
-                _apply_wrapper_Cout_channels(patching=patching, input=x_next)
-                if patching
-                else x_next
+            x_next_batch = _apply_wrapper_select(input=x_next, patching=patching)(
+                patching=patching, input=x_next
             ).to(latents.device)
 
-            if lead_time_label is not None:
+            if isinstance(net, EDMPrecond):
+                # Conditioning info is passed as keyword arg
                 denoised = net(
                     x_next_batch,
-                    x_lr,
                     t_next,
-                    class_labels,
-                    lead_time_label=lead_time_label,
-                    embedding_selector=patch_embedding_selector,
+                    condition=x_lr,
+                    class_labels=class_labels,
+                    **optional_args,
                 )
             else:
                 denoised = net(
@@ -295,8 +328,9 @@ def stochastic_sampler(
                     x_lr,
                     t_next,
                     class_labels,
-                    embedding_selector=patch_embedding_selector,
+                    **optional_args,
                 )
+
             if patching:
                 # Un-patch the denoised image
                 # (batch_size, C_out, img_shape_y, img_shape_x)

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -196,7 +196,7 @@ class LaunchLogger(object):
 
         # Trigger profiling
         if self.profile and self.profiler:
-            self.logger.warning(f"Starting profile for epoch {self.epoch}")
+            self.pyLogger.warning(f"Starting profile for epoch {self.epoch}")
             self.profiler.__enter__()
             profiler.start()
 
@@ -243,8 +243,8 @@ class LaunchLogger(object):
 
         # Exit profiling
         if self.profile and self.profiler:
-            self.logger.warning("Ending profile")
-            self.profiler.__exit__()
+            self.pyLogger.warning("Ending profile")
+            self.profiler.__exit__(exc_type, exc_value, exc_tb)
             profiler.end()
 
         # Timing stuff, TODO: histograms not line plots

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -43,6 +43,8 @@ def run_test_distributed_graphcast(
     os.environ["WORLD_SIZE"] = f"{world_size}"
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = str(12355)
+    local_rank = rank % torch.cuda.device_count()
+    os.environ["LOCAL_RANK"] = f"{local_rank}"
 
     DistributedManager.initialize()
     DistributedManager.create_process_subgroup(
@@ -136,9 +138,9 @@ def run_test_distributed_graphcast(
     diff = out_single_gpu - out_multi_gpu
     diff = torch.abs(diff)
     mask = diff > atol
-    assert torch.allclose(
-        out_single_gpu, out_multi_gpu, atol=atol, rtol=rtol
-    ), f"{mask.sum()} elements have diff > {atol} \n {out_single_gpu[mask]} \n {out_multi_gpu[mask]}"
+    assert torch.allclose(out_single_gpu, out_multi_gpu, atol=atol, rtol=rtol), (
+        f"{mask.sum()} elements have diff > {atol} \n {out_single_gpu[mask]} \n {out_multi_gpu[mask]}"
+    )
 
     # compare model gradients (ensure correctness of backward)
     model_multi_gpu_parameters = list(model_multi_gpu.parameters())
@@ -151,7 +153,9 @@ def run_test_distributed_graphcast(
             model_multi_gpu_parameters[param_idx].grad,
             atol=atol_w,
             rtol=rtol_w,
-        ), f"{mask.sum()} elements have diff > {atol_w} \n {param.grad[mask]} \n {model_multi_gpu_parameters[param_idx].grad[mask]}"
+        ), (
+            f"{mask.sum()} elements have diff > {atol_w} \n {param.grad[mask]} \n {model_multi_gpu_parameters[param_idx].grad[mask]}"
+        )
 
     # cleanup distributed
     DistributedManager.cleanup()
@@ -159,10 +163,11 @@ def run_test_distributed_graphcast(
     del os.environ["WORLD_SIZE"]
     del os.environ["MASTER_ADDR"]
     del os.environ["MASTER_PORT"]
+    del os.environ["LOCAL_RANK"]
 
 
 @import_or_fail("dgl")
-@pytest.mark.multigpu
+@pytest.mark.multigpu_dynamic
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
 @pytest.mark.parametrize("do_concat_trick", [False, True])
 @pytest.mark.parametrize("do_checkpointing", [False, True])

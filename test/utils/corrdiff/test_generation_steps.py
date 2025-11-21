@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-FileCopyrightText: All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -47,7 +47,6 @@ class MockNet:
 @import_or_fail("cftime")
 @pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_regression_step(device, pytestconfig):
-
     from physicsnemo.models.diffusion import UNet
     from physicsnemo.utils.corrdiff import regression_step
 
