@@ -187,7 +187,7 @@ pytest test/datapipes/test_flood_forecaster_datasets.py \
         test/models/test_flood_forecaster_data_processing.py \
         test/models/test_flood_forecaster_training.py \
         test/utils/test_flood_forecaster_utils.py \
-        --cov=examples.weather.flood_modeling.FloodForecaster \
+        --cov=examples.weather.flood_modeling.flood_forecaster \
         --cov-report=html
 ```
 

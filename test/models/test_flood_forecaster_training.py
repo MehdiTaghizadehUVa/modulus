@@ -27,7 +27,7 @@ import torch
 import torch.nn as nn
 
 # Add the FloodForecaster example to the path
-_examples_dir = Path(__file__).parent.parent.parent / "examples" / "weather" / "flood_modeling" / "floodforecaster"
+_examples_dir = Path(__file__).parent.parent.parent / "examples" / "weather" / "flood_modeling" / "flood_forecaster"
 if str(_examples_dir) not in sys.path:
     sys.path.insert(0, str(_examples_dir))
 
