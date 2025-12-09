@@ -1,0 +1,201 @@
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2025 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Configuration file for FloodForecaster training.
+# This file is used by Hydra to configure the training run.
+
+hydra:
+  job:
+    chdir: True  # Change directory to the job's working directory.
+  run:
+    dir: ./outputs/  # Directory to save outputs.
+
+# Distributed computing
+distributed:
+  use_distributed: false
+  wireup_info: 'mpi'
+  wireup_store: 'tcp'
+  model_parallel_size: 1
+  seed: 123
+  device: 'cuda:0'
+
+# Dataset related for training and one-step evaluation
+source_data:
+  root: "${DATA_ROOT:/path/to/source/data}"  # Set DATA_ROOT environment variable or update this path
+  resolution: 48
+  n_history: 3
+  batch_size: 8
+  query_res: [48, 48]
+  xy_file: "M40_XY.txt"
+  static_files:
+    - "M40_XY.txt"
+    - "M40_CA.txt"
+    - "M40_CE.txt"
+    - "M40_CS.txt"
+    - "M40_FA.txt"
+    - "M40_A.txt"
+    - "M40_CU.txt"
+  dynamic_patterns:
+    WD: "M40_WD_{}.txt"
+    VX: "M40_VX_{}.txt"
+    VY: "M40_VY_{}.txt"
+  boundary_patterns:
+    inflow: "M40_US_InF_{}.txt"
+  noise_type: "none"
+  noise_std: [0.01, 0.001, 0.001]
+  rollout_length: 78
+  skip_before_timestep: 12
+  dt: 1200
+
+# Target domain dataset
+target_data:
+  root: "${TARGET_DATA_ROOT:/path/to/target/data}"  # Set TARGET_DATA_ROOT environment variable or update this path
+  resolution: 48
+  n_history: 3
+  batch_size: 8
+  query_res: [48, 48]
+  xy_file: "M40_XY.txt"
+  static_files:
+    - "M40_XY.txt"
+    - "M40_CA.txt"
+    - "M40_CE.txt"
+    - "M40_CS.txt"
+    - "M40_FA.txt"
+    - "M40_A.txt"
+    - "M40_CU.txt"
+  dynamic_patterns:
+    WD: "M40_WD_{}.txt"
+    VX: "M40_VX_{}.txt"
+    VY: "M40_VY_{}.txt"
+  boundary_patterns:
+    inflow: "M40_US_InF_{}.txt"
+  noise_type: "none"
+  noise_std: [0.01, 0.001, 0.001]
+  rollout_length: 78
+  skip_before_timestep: 12
+  dt: 1200
+
+# Rollout evaluation dataset
+rollout_data:
+  root: "${ROLLOUT_DATA_ROOT:/path/to/rollout/data}"  # Set ROLLOUT_DATA_ROOT environment variable or update this path
+  xy_file: "M40_XY.txt"
+  static_files:
+    - "M40_XY.txt"
+    - "M40_CA.txt"
+    - "M40_CE.txt"
+    - "M40_CS.txt"
+    - "M40_FA.txt"
+    - "M40_A.txt"
+    - "M40_CU.txt"
+  dynamic_patterns:
+    WD: "M40_WD_{}.txt"
+    VX: "M40_VX_{}.txt"
+    VY: "M40_VY_{}.txt"
+  boundary_patterns:
+    inflow: "M40_US_InF_{}.txt"
+
+# Model configuration (for neuralop get_model compatibility)
+model:
+  model_arch: 'gino'
+  data_channels: 20
+  out_channels: 3
+  latent_feature_channels: null
+  projection_channel_ratio: 4
+  gno_coord_dim: 2
+  in_gno_radius: 0.1
+  out_gno_radius: 0.1
+  in_gno_transform_type: 'linear'
+  out_gno_transform_type: 'linear'
+  gno_weighting_function: null
+  gno_weight_function_scale: 1.0
+  in_gno_pos_embed_type: 'transformer'
+  out_gno_pos_embed_type: 'transformer'
+  fno_in_channels: 20
+  fno_n_modes: [16, 16]
+  fno_hidden_channels: 64
+  fno_lifting_channel_ratio: 2
+  fno_n_layers: 4
+  gno_embed_channels: 32
+  gno_embed_max_positions: 10000
+  in_gno_channel_mlp_hidden_layers: [80, 80, 80]
+  out_gno_channel_mlp_hidden_layers: [512, 256]
+  gno_use_open3d: false
+  gno_use_torch_scatter: false
+  out_gno_tanh: null
+  fno_resolution_scaling_factor: null
+  fno_block_precision: 'full'
+  fno_use_channel_mlp: true
+  fno_channel_mlp_dropout: 0
+  fno_channel_mlp_expansion: 0.5
+  fno_norm: 'instance_norm'
+  fno_ada_in_features: 16
+  fno_ada_in_dim: 1
+  fno_preactivation: false
+  fno_skip: 'linear'
+  fno_channel_mlp_skip: 'soft-gating'
+  fno_separable: false
+  fno_factorization: 'tucker'
+  fno_rank: 0.4
+  fno_fixed_rank_modes: false
+  fno_implementation: 'factorized'
+
+# Checkpoint configuration
+checkpoint:
+  save_dir: "./checkpoints_flood_forecaster"
+  resume_from_dir: null
+  resume_from_source: null
+  resume_from_adapt: null
+
+# Rollout output directory
+rollout:
+  out_dir: "./rollout_outputs"
+
+# Optimization settings
+training:
+  n_epochs: 4
+  n_epochs_source: 2
+  n_epochs_adapt: 2
+  learning_rate: 1e-4
+  adapt_learning_rate: 1e-4
+  training_loss: 'l2'
+  testing_loss: 'l2'
+  weight_decay: 1e-4
+  amp_autocast: false
+  scheduler: 'StepLR'
+  scheduler_T_max: 200
+  scheduler_patience: 5
+  step_size: 50
+  gamma: 0.5
+  da_class_loss_weight: 0.0
+  da_lambda_max: 1.0
+  da_classifier:
+    conv_layers:
+      - out_channels: 64
+        kernel_size: 3
+        pool_size: 2
+    fc_dim: 1
+
+# Weights & Biases logging
+wandb:
+  log: false
+  name: null
+  group: 'flood-experiments'
+  project: 'Flood_GINO_NoPhysics'
+  entity: 'uva_mehdi'
+  sweep: false
+  log_output: true
+  eval_interval: 1
+
