@@ -108,27 +108,47 @@ def test_gradient_reversal_forward(device):
 def test_gradient_reversal_backward(device):
     """Test gradient reversal backward pass negates gradient."""
     grl = GradientReversal(lambda_max=1.0)
+    # Ensure x is a leaf tensor with requires_grad
     x = torch.rand(4, 10, requires_grad=True).to(device)
+    # Ensure x is a leaf tensor (not a result of operations)
+    x = x.detach().requires_grad_(True)
 
     y = grl(x)
     loss = y.sum()
     loss.backward()
 
-    # Gradient should be negated (-1 * lambda)
+    # Gradient should be negated (-1 * lambda_max = -1.0)
+    # The backward pass returns -lambda * grad_output, so with lambda=1.0 and grad_output=1.0,
+    # we get -1.0
     assert x.grad is not None
     assert torch.allclose(x.grad, -torch.ones_like(x.grad))
 
 
 @pytest.fixture
 def da_config():
-    """Create mock DA config."""
-    config = MagicMock()
-    config.conv_layers = [
-        {"out_channels": 16, "kernel_size": 3, "pool_size": 2},
-        {"out_channels": 32, "kernel_size": 3, "pool_size": 2},
-    ]
-    config.fc_dim = 1
-    return config
+    """Create mock DA config that supports .get() method, 'in' operator, and [] access."""
+    # Use a dict-like object that supports both attribute access and dict-like access
+    class DictLike:
+        def __init__(self):
+            self.conv_layers = [
+                {"out_channels": 16, "kernel_size": 3, "pool_size": 2},
+                {"out_channels": 32, "kernel_size": 3, "pool_size": 2},
+            ]
+            self.fc_dim = 1
+        
+        def get(self, key, default=None):
+            """Support .get() method for dict-like access."""
+            return getattr(self, key, default)
+        
+        def __contains__(self, key):
+            """Support 'in' operator for dict-like access."""
+            return hasattr(self, key)
+        
+        def __getitem__(self, key):
+            """Support [] subscript access for dict-like access."""
+            return getattr(self, key)
+    
+    return DictLike()
 
 
 @pytest.mark.parametrize("device", ["cuda:0", "cpu"])
@@ -188,13 +208,17 @@ def test_gradient_reversal_set_lambda(device):
 def test_gradient_reversal_lambda_scales_gradient(device):
     """Test that lambda scales the reversed gradient."""
     grl = GradientReversal(lambda_max=0.5)
+    # Ensure x is a leaf tensor with requires_grad
     x = torch.ones(4, 10, requires_grad=True).to(device)
+    # Ensure x is a leaf tensor (not a result of operations)
+    x = x.detach().requires_grad_(True)
 
     y = grl(x)
     loss = y.sum()
     loss.backward()
 
-    # Gradient should be -0.5 * ones
+    # Gradient should be -lambda * grad_output = -0.5 * 1.0 = -0.5
+    assert x.grad is not None
     assert torch.allclose(x.grad, -0.5 * torch.ones_like(x.grad))
 
 

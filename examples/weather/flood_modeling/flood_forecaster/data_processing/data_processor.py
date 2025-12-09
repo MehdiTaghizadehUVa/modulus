@@ -157,7 +157,12 @@ class GINOWrapper(nn.Module):
         super().__init__()
         if model is None:
             raise ValueError("model cannot be None")
-        # Register as a submodule so it's properly tracked
+        # Register as a submodule so it's properly tracked by PyTorch
+        # This ensures the model is properly stored and accessible
+        # Always store as both submodule (for PyTorch) and direct attribute (for easy access)
+        if isinstance(model, nn.Module):
+            self.add_module('gino', model)
+        # Also store as direct attribute for easy access (works for both Module and non-Module)
         self.gino = model
         self.autoregressive = autoregressive
         
@@ -387,13 +392,32 @@ class GINOWrapper(nn.Module):
         
         This allows the wrapper to be used as a drop-in replacement.
         """
-        if name in ['gino', 'autoregressive']:
-            # Don't delegate these - they're wrapper attributes
+        # 'gino' and 'autoregressive' are wrapper attributes, should be accessible directly
+        # If we get here, it means normal attribute lookup failed
+        # For 'gino', try to get from _modules (if registered as submodule)
+        if name == 'gino':
+            if 'gino' in self._modules:
+                return self._modules['gino']
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
-        try:
-            return getattr(self.gino, name)
-        except AttributeError:
+        
+        if name == 'autoregressive':
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+        
+        # For other attributes, delegate to gino
+        # Get gino (should exist as attribute or in _modules)
+        gino = None
+        if hasattr(self, 'gino'):
+            gino = self.gino
+        elif 'gino' in self._modules:
+            gino = self._modules['gino']
+        
+        if gino is not None:
+            try:
+                return getattr(gino, name)
+            except AttributeError:
+                pass
+        
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
     
     def save_checkpoint(self, save_folder: str, save_name: str) -> None:
         r"""

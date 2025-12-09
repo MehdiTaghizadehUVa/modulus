@@ -42,6 +42,9 @@ def sample_dict():
     batch_size = 2
     num_cells = 100
     n_history = 3
+    # query_points should be (B, H, W, 2) or (H, W, 2) for latent queries
+    # Using a simple grid: (8, 8, 2) for 2D
+    H, W = 8, 8
 
     return {
         "geometry": torch.rand(batch_size, num_cells, 2),
@@ -49,6 +52,7 @@ def sample_dict():
         "boundary": torch.rand(batch_size, n_history, num_cells, 1),
         "dynamic": torch.rand(batch_size, n_history, num_cells, 3),
         "target": torch.rand(batch_size, num_cells, 3),
+        "query_points": torch.rand(batch_size, H, W, 2),  # Required for preprocessing
     }
 
 
@@ -264,10 +268,21 @@ def test_ginowrapper_autoregressive(mock_gino_model, device):
     output_queries = torch.rand(1, 100, 2)
     x = torch.rand(1, 100, 10)  # Input with 10 channels, out_channels=3
 
-    # Mock the internal GNO components to return zero output (so we can verify residual)
+    # Mock the internal GNO components
+    # Flow: gno_out -> permute -> projection -> permute
+    # gno_out returns (B, channels, n_out) = (1, 64, 100)
+    # After permute(0, 2, 1) -> (1, 100, 64)
+    # projection takes (1, 100, 64) and should return (1, 3, 100)
+    # After permute(0, 2, 1) -> (1, 100, 3) which matches x.shape[1] = 100
     mock_gino_model.gno_in.return_value = torch.rand(64, 8 * 8)
     mock_gino_model.gno_out.return_value = torch.rand(1, 64, 100)
-    mock_gino_model.projection.return_value = torch.zeros(1, 3, 100)  # Zero output
+    # projection is called on (1, 100, 64) after first permute
+    # Return (1, 3, 100) so that after permute(0, 2, 1) we get (1, 100, 3)
+    def mock_projection(x):
+        # x is (B, n_out, channels) = (1, 100, 64)
+        # Return (B, out_channels, n_out) = (1, 3, 100) so permute gives (1, 100, 3)
+        return torch.zeros(x.shape[0], 3, x.shape[1])
+    mock_gino_model.projection.side_effect = mock_projection
 
     # Call with autoregressive=True
     out = wrapper(
@@ -295,7 +310,13 @@ def test_ginowrapper_autoregressive_with_features(mock_gino_model, device):
     # Mock the internal GNO components
     mock_gino_model.gno_in.return_value = torch.rand(64, 8 * 8)
     mock_gino_model.gno_out.return_value = torch.rand(1, 64, 100)
-    mock_gino_model.projection.return_value = torch.zeros(1, 3, 100)
+    # projection is called on (1, 100, 64) after first permute
+    # It should return (1, 3, 100) so that after permute(0, 2, 1) we get (1, 100, 3)
+    def mock_projection(x):
+        # x is (B, n_out, channels) = (1, 100, 64)
+        # Return (B, out_channels, n_out) = (1, 3, 100) so permute gives (1, 100, 3)
+        return torch.zeros(x.shape[0], 3, x.shape[1])
+    mock_gino_model.projection.side_effect = mock_projection
 
     # Call with both autoregressive and return_features
     out, features = wrapper(
@@ -352,7 +373,8 @@ def test_lploss_wrapper_with_real_lploss(device, pytestconfig):
     from pytest_utils import import_or_fail
 
     @import_or_fail(["neuralop"])
-    def _test():
+    def _test(pytestconfig=None):
+        """Inner test function that accepts pytestconfig parameter."""
         from neuralop.losses import LpLoss
 
         loss_fn = LpLossWrapper(LpLoss(d=2, p=2))
