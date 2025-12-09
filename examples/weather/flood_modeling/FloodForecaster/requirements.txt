@@ -9,6 +9,3 @@ omegaconf>=2.3.0
 pandas>=1.3.0
 h5py>=3.0.0
 
-# Optional dependencies for data generation (Windows only)
-# pywin32>=300; sys_platform == 'win32'
-

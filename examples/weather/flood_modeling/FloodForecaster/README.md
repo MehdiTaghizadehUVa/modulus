@@ -52,47 +52,16 @@ The framework integrates a domain adaptation technique using a gradient reversal
 
 ## Data Generation
 
-FloodForecaster includes utilities for generating synthetic hydrographs and automating HEC-RAS simulations to create training datasets.
+Data generation utilities for creating synthetic hydrographs and automating HEC-RAS simulations are available in a separate repository:
 
-### Synthetic Hydrograph Generation
+**Data Generation Repository**: [https://github.com/MehdiTaghizadehUVa/FloodForecaster](https://github.com/MehdiTaghizadehUVa/FloodForecaster)
 
-Generate synthetic hydrographs from base templates using random scaling factors:
+This repository includes:
+- Synthetic hydrograph generation utilities
+- HEC-RAS simulation automation scripts
+- Data preprocessing and formatting tools
 
-```bash
-python data_generation/generate_hydrographs.py \
-    --base_hydrographs path/to/base_hydrographs.txt \
-    --num_synthetic 100 \
-    --output path/to/output/hydrographs.txt \
-    --scale_range 0.8 1.2 \
-    --random_seed 42
-```
-
-### HEC-RAS Simulation Automation
-
-Automate batch HEC-RAS simulations with multiple hydrographs:
-
-```bash
-python data_generation/run_simulations.py \
-    --project_path path/to/hec_ras_project \
-    --hydrograph_file path/to/hydrographs.txt \
-    --save_dir path/to/output \
-    --prefix M40 \
-    --start_col 0 \
-    --end_col 99
-```
-
-**Note**: HEC-RAS automation requires:
-- HEC-RAS installed on Windows
-- `pywin32` package for COM automation: `pip install pywin32`
-- HEC-RAS project files (`.prj`, `.u01`) properly configured
-
-The automation script will:
-1. Modify the U01 file with each hydrograph
-2. Run HEC-RAS computation
-3. Extract results from HDF5 output files
-4. Save data in FloodForecaster-compatible format
-
-For more details, see the `data_generation/` module documentation.
+Please refer to the [FloodForecaster repository](https://github.com/MehdiTaghizadehUVa/FloodForecaster) for data generation documentation and usage examples.
 
 ## Dataset
 
@@ -313,11 +282,6 @@ FloodForecaster/
 │   ├── flood_dataset.py     # Raw dataset loader
 │   ├── normalized_dataset.py # Normalized training dataset
 │   └── rollout_dataset.py   # Rollout evaluation dataset
-├── data_generation/         # Data generation utilities
-│   ├── hydrograph_generation.py  # Synthetic hydrograph generation
-│   ├── hec_ras_automation.py     # HEC-RAS simulation automation
-│   ├── generate_hydrographs.py   # Hydrograph generation script
-│   └── run_simulations.py        # Batch simulation script
 ├── data_processing/         # Data preprocessing
 │   └── data_processor.py    # GINO data processor and wrappers
 ├── training/                # Training modules
