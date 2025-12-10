@@ -152,15 +152,25 @@ def run_inference(cfg: DictConfig) -> None:
             autoregressive = cfg.model.autoregressive
         model = GINOWrapper(gino_model, autoregressive=autoregressive)
 
-        # Load normalizers from checkpoint if available, otherwise recreate from source data
+        # Load normalizers from checkpoint if available
+        # Normalizers are saved in both pretrain and adapt folders, so check both locations
         normalizers_path = checkpoint_path / "normalizers.pt"
+        if not normalizers_path.exists():
+            # If loading from adapt folder, also check pretrain folder as fallback
+            # (normalizers are saved in both places and are the same)
+            if checkpoint_path.name == "adapt":
+                pretrain_path = checkpoint_path.parent / "pretrain" / "normalizers.pt"
+                if pretrain_path.exists():
+                    normalizers_path = pretrain_path
+                    log_rank_zero.info(f"Normalizers not found in adapt folder, checking pretrain folder...")
+        
         if normalizers_path.exists():
-            log_rank_zero.info(f"Loading normalizers from checkpoint: {normalizers_path}")
+            log_rank_zero.info(f"Loading normalizers from: {normalizers_path}")
             normalizers = torch.load(normalizers_path, map_location=device)
-            log_rank_zero.info("Normalizers loaded from checkpoint")
+            log_rank_zero.info("Normalizers loaded successfully")
         else:
             # Fallback: recreate normalizers from source data if not saved
-            log_rank_zero.info("Normalizers not found in checkpoint. Recreating from source data...")
+            log_rank_zero.info("Normalizers not found in checkpoint or pretrain folder. Recreating from source data...")
             from datasets import FloodDatasetWithQueryPoints, NormalizedDataset
             from utils.normalization import stack_and_fit_transform
 

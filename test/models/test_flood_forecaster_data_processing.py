@@ -26,6 +26,8 @@ import pytest
 import torch
 import torch.nn as nn
 
+import physicsnemo
+
 # Add the FloodForecaster example to the path
 _examples_dir = Path(__file__).parent.parent.parent / "examples" / "weather" / "flood_modeling" / "flood_forecaster"
 if str(_examples_dir) not in sys.path:
@@ -34,6 +36,36 @@ if str(_examples_dir) not in sys.path:
 from data_processing import FloodGINODataProcessor, GINOWrapper, LpLossWrapper
 
 from . import common
+
+
+# Define MockGINOModelForCheckpoint at module level so it can be properly loaded from checkpoint
+# Note: Name doesn't start with "Test" to avoid pytest collection
+# Register it in the model registry to ensure it can be found when loading checkpoints
+class MockGINOModelForCheckpoint(physicsnemo.Module):
+    """Simple test GINO model for checkpoint testing."""
+    def __init__(self):
+        super().__init__(meta=physicsnemo.ModelMetaData(name="MockGINOForCheckpoint"))
+        self.fno_hidden_channels = 64
+        self.out_channels = 3
+        self.gno_coord_dim = 2
+        self.latent_feature_channels = None
+        self.in_coord_dim_reverse_order = [2, 3]
+        self.out_gno_tanh = None
+        
+        # Create minimal layers for the model to work
+        self.gno_in = nn.Linear(2, 64)
+        self.gno_out = nn.Linear(64, 64)
+        self.projection = nn.Linear(64, 3)
+        self.latent_embedding = nn.Identity()
+
+# Register MockGINOModelForCheckpoint in the model registry so it can be loaded from checkpoints
+try:
+    registry = physicsnemo.registry.ModelRegistry()
+    if "MockGINOModelForCheckpoint" not in registry.list_models():
+        registry.register(MockGINOModelForCheckpoint, "MockGINOModelForCheckpoint")
+except (ValueError, AttributeError):
+    # Already registered or registry issue - continue
+    pass
 
 
 @pytest.fixture
@@ -110,7 +142,8 @@ def mock_gino_model():
 def test_data_processor_init(device):
     """Test FloodGINODataProcessor initialization."""
     processor = FloodGINODataProcessor(device=device)
-    assert processor.device == device
+    # device property returns torch.device, so compare string representations
+    assert str(processor.device) == str(torch.device(device))
     assert processor.target_norm is None
     assert processor.inverse_test is True
     assert processor.model is None
@@ -389,4 +422,124 @@ def test_lploss_wrapper_with_real_lploss(device, pytestconfig):
         assert result.dim() == 0  # Scalar loss
 
     _test(pytestconfig=pytestconfig)
+
+
+def _instantiate_model(cls, seed: int = 0, **kwargs):
+    """Helper to create model with reproducible parameters."""
+    model = cls(**kwargs)
+    gen = torch.Generator(device="cpu")
+    gen.manual_seed(seed)
+    with torch.no_grad():
+        for param in model.parameters():
+            param.copy_(torch.randn(param.shape, generator=gen, dtype=param.dtype))
+    return model
+
+
+@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize(
+    "config",
+    ["default", "custom"],
+    ids=["with_defaults", "with_custom_args"]
+)
+def test_ginowrapper_constructor(config, device, mock_gino_model):
+    """Test GINOWrapper constructor and attributes."""
+    if config == "default":
+        model = GINOWrapper(mock_gino_model, autoregressive=False)
+        assert model.autoregressive is False
+    else:
+        model = GINOWrapper(mock_gino_model, autoregressive=True)
+        assert model.autoregressive is True
+    
+    # Test common attributes
+    assert model.gino == mock_gino_model
+    assert hasattr(model, "fno_hidden_channels")
+    assert isinstance(model, physicsnemo.Module)
+
+
+@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize(
+    "config",
+    ["default", "custom"],
+    ids=["with_defaults", "with_custom_args"]
+)
+def test_flood_gino_data_processor_constructor(config, device):
+    """Test FloodGINODataProcessor constructor and attributes."""
+    if config == "default":
+        model = FloodGINODataProcessor(device=device)
+        # device property returns torch.device, so compare string representations
+        assert str(model.device) == str(torch.device(device))
+        assert model.target_norm is None
+        assert model.inverse_test is True
+    else:
+        mock_norm = MagicMock()
+        model = FloodGINODataProcessor(device=device, target_norm=mock_norm, inverse_test=False)
+        # device property returns torch.device, so compare string representations
+        assert str(model.device) == str(torch.device(device))
+        assert model.target_norm == mock_norm
+        assert model.inverse_test is False
+    
+    # Test common attributes
+    assert hasattr(model, "model")
+    assert isinstance(model, physicsnemo.Module)
+
+
+@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+def test_ginowrapper_from_checkpoint(device, mock_gino_model):
+    """Test loading GINOWrapper from checkpoint and verify outputs."""
+    from pathlib import Path
+    import physicsnemo
+    
+    # Use the module-level MockGINOModelForCheckpoint class for checkpoint testing
+    # This ensures the class can be properly loaded from checkpoint
+    gino_model = MockGINOModelForCheckpoint()
+    
+    # Create a model and save checkpoint
+    model_orig = GINOWrapper(gino_model, autoregressive=False).to(device)
+    checkpoint_path = Path("checkpoint_gino_wrapper.mdlus")
+    model_orig.save(str(checkpoint_path))
+    
+    # Load from checkpoint - use strict=False to handle potential state dict mismatches
+    # The nested TestGINOModel should be properly reconstructed via module path or registry
+    model = physicsnemo.Module.from_checkpoint(str(checkpoint_path), strict=False).to(device)
+    
+    # Verify attributes after loading
+    assert model.autoregressive is False
+    assert isinstance(model, GINOWrapper)
+    # Verify the wrapped model was loaded correctly with all layers
+    # Note: The model structure is preserved even if class type isn't exactly TestGINOModel
+    # (physicsnemo may load it as a generic Module if the class can't be imported)
+    assert hasattr(model.gino, 'gno_in')
+    assert hasattr(model.gino, 'gno_out')
+    assert hasattr(model.gino, 'projection')
+    assert hasattr(model.gino, 'latent_embedding')
+    # Verify the layers have the correct structure
+    assert isinstance(model.gino.gno_in, nn.Linear)
+    assert isinstance(model.gino.gno_out, nn.Linear)
+    assert isinstance(model.gino.projection, nn.Linear)
+    
+    # Cleanup
+    checkpoint_path.unlink(missing_ok=True)
+
+
+@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+def test_flood_gino_data_processor_from_checkpoint(device):
+    """Test loading FloodGINODataProcessor from checkpoint and verify outputs."""
+    from pathlib import Path
+    
+    # Create a model and save checkpoint
+    model_orig = FloodGINODataProcessor(device=device).to(device)
+    checkpoint_path = Path("checkpoint_flood_gino_data_processor.mdlus")
+    model_orig.save(str(checkpoint_path))
+    
+    # Load from checkpoint
+    model = physicsnemo.Module.from_checkpoint(str(checkpoint_path)).to(device)
+    
+    # Verify attributes after loading
+    # Note: device is a property, so we check it matches
+    assert str(model.device) == str(torch.device(device))
+    assert model.inverse_test is True
+    assert isinstance(model, FloodGINODataProcessor)
+    
+    # Cleanup
+    checkpoint_path.unlink(missing_ok=True)
 

@@ -25,6 +25,9 @@ from typing import Dict, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 
+import physicsnemo
+from physicsnemo.models.meta import ModelMetaData
+
 try:
     from jaxtyping import Float
     HAS_JAXTYPING = True
@@ -83,7 +86,7 @@ class LpLossWrapper:
         return self.loss_fn(y_pred, y)
 
 
-class GINOWrapper(nn.Module):
+class GINOWrapper(physicsnemo.Module):
     r"""
     Enhanced wrapper around GINO model that adds enhanced functionality.
     
@@ -154,7 +157,7 @@ class GINOWrapper(nn.Module):
         ValueError
             If ``model`` is None.
         """
-        super().__init__()
+        super().__init__(meta=ModelMetaData(name="GINOWrapper"))
         if model is None:
             raise ValueError("model cannot be None")
         # Register as a submodule so it's properly tracked by PyTorch
@@ -463,7 +466,7 @@ class GINOWrapper(nn.Module):
         return cls(gino)
 
 
-class FloodGINODataProcessor(nn.Module):
+class FloodGINODataProcessor(physicsnemo.Module):
     r"""
     Data processor for flood GINO model that handles preprocessing and postprocessing.
     
@@ -508,12 +511,15 @@ class FloodGINODataProcessor(nn.Module):
         TypeError
             If ``device`` is not a string or torch.device.
         """
-        super().__init__()
+        super().__init__(meta=ModelMetaData(name="FloodGINODataProcessor"))
         # Accept both string and torch.device objects - preserve original type
-        if isinstance(device, (str, torch.device)):
-            self.device = device
-        else:
+        if not isinstance(device, (str, torch.device)):
             raise TypeError(f"device must be a string or torch.device, got {type(device)}")
+        # Store device string for reference, but use super().to() to actually move module
+        # Note: physicsnemo.Module has a read-only 'device' property, so we can't set self.device directly
+        self._device_str = str(device) if isinstance(device, torch.device) else device
+        # Move module to device using parent class method
+        super().to(device)
         self.model: Optional[nn.Module] = None
         self.target_norm = target_norm
         self.inverse_test = inverse_test
@@ -646,6 +652,23 @@ class FloodGINODataProcessor(nn.Module):
         Tuple[torch.Tensor, Dict]
             Tuple of (postprocessed output, sample).
         """
+        ### Input validation
+        # Skip validation when running under torch.compile for performance
+        if not torch.compiler.is_compiling():
+            if not isinstance(out, torch.Tensor):
+                raise ValueError(
+                    f"Expected out to be torch.Tensor, got {type(out)}"
+                )
+            if out.ndim < 2:
+                raise ValueError(
+                    f"Expected out to be at least 2D tensor (B, n_out, C_out), "
+                    f"got {out.ndim}D tensor with shape {tuple(out.shape)}"
+                )
+            if not isinstance(sample, dict):
+                raise ValueError(
+                    f"Expected sample to be dict, got {type(sample)}"
+                )
+        
         if (not self.training) and self.inverse_test and (self.target_norm is not None):
             out = self.target_norm.inverse_transform(out)
             if sample.get("y") is not None:
@@ -675,7 +698,10 @@ class FloodGINODataProcessor(nn.Module):
         if not isinstance(device, (str, torch.device)):
             raise TypeError(f"device must be a string or torch.device, got {type(device)}")
         
-        self.device = device
+        # Update device string reference
+        self._device_str = str(device) if isinstance(device, torch.device) else device
+        # Move module to device using parent class method (physicsnemo.Module has read-only device property)
+        super().to(device)
         if self.target_norm is not None:
             self.target_norm = self.target_norm.to(device)
         return self

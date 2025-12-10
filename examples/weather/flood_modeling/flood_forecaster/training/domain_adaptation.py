@@ -47,6 +47,9 @@ from neuralop.training import AdamW
 from neuralop.losses import LpLoss
 from neuralop.training.training_state import save_training_state, load_training_state
 
+import physicsnemo
+from physicsnemo.models.meta import ModelMetaData
+
 from data_processing import LpLossWrapper
 
 # Try to import comm for distributed training, fallback if not available
@@ -123,7 +126,7 @@ class GradientReversalFunction(Function):
         return grad_output.neg().mul(ctx.lambda_), None
 
 
-class GradientReversal(nn.Module):
+class GradientReversal(physicsnemo.Module):
     r"""
     Gradient reversal layer module for adversarial domain adaptation.
     
@@ -161,7 +164,7 @@ class GradientReversal(nn.Module):
         lambda_max : float, optional, default=1.0
             Maximum lambda value (typically 1.0).
         """
-        super().__init__()
+        super().__init__(meta=ModelMetaData(name="GradientReversal"))
         self.lambda_ = lambda_max
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -178,6 +181,18 @@ class GradientReversal(nn.Module):
         torch.Tensor
             Output tensor (same shape as input, but gradients will be reversed).
         """
+        ### Input validation
+        # Skip validation when running under torch.compile for performance
+        if not torch.compiler.is_compiling():
+            if not isinstance(x, torch.Tensor):
+                raise ValueError(
+                    f"Expected input to be torch.Tensor, got {type(x)}"
+                )
+            if x.numel() == 0:
+                raise ValueError(
+                    f"Expected non-empty input tensor, got tensor with shape {tuple(x.shape)}"
+                )
+        
         return GradientReversalFunction.apply(x, self.lambda_)
 
     def set_lambda(self, val: float) -> None:
@@ -192,7 +207,7 @@ class GradientReversal(nn.Module):
         self.lambda_ = val
 
 
-class CNNDomainClassifier(nn.Module):
+class CNNDomainClassifier(physicsnemo.Module):
     r"""
     CNN-based domain classifier for adversarial domain adaptation.
     
@@ -250,7 +265,7 @@ class CNNDomainClassifier(nn.Module):
         ValueError
             If required keys are missing from ``da_cfg`` or if conv_layers is empty.
         """
-        super().__init__()
+        super().__init__(meta=ModelMetaData(name="CNNDomainClassifier"))
         if not da_cfg.get("conv_layers"):
             raise ValueError("da_cfg must contain 'conv_layers' list")
         if "fc_dim" not in da_cfg:
@@ -363,6 +378,7 @@ class DomainAdaptationTrainer:
         device: Union[str, torch.device] = "cuda",
         verbose: bool = True,
         logger: Optional[Any] = None,
+        wandb_step_offset: int = 0,
     ):
         r"""
         Initialize domain adaptation trainer.
@@ -381,6 +397,8 @@ class DomainAdaptationTrainer:
             Whether to print training progress.
         logger : Any, optional
             Optional logger instance (if None, uses print when verbose=True).
+        wandb_step_offset : int, optional, default=0
+            Step offset for wandb logging to continue from pretraining step count.
         """
         self.model = model
         self.data_processor = data_processor
@@ -388,6 +406,7 @@ class DomainAdaptationTrainer:
         self.device = device
         self.verbose = verbose
         self.logger = logger
+        self.wandb_step_offset = wandb_step_offset
         self._eval_interval = 1
         
     def train_domain_adaptation(
@@ -865,6 +884,7 @@ def adapt_model(
     source_val_loader: DataLoader,
     target_data_config: Any,
     logger: Optional[Any] = None,
+    wandb_step_offset: int = 0,
 ) -> Tuple[nn.Module, nn.Module, "DomainAdaptationTrainer"]:
     r"""
     Perform domain adaptation on target domain data.
@@ -897,6 +917,9 @@ def adapt_model(
         Target data configuration (OmegaConf DictConfig).
     logger : Any, optional
         Optional logger instance (physicsnemo PythonLogger or compatible).
+    wandb_step_offset : int, optional, default=0
+        Step offset for wandb logging to continue from pretraining step count.
+        Currently not used but reserved for future wandb integration.
 
     Returns
     -------
@@ -1031,6 +1054,7 @@ def adapt_model(
         device=device,
         verbose=is_logger,
         logger=logger,
+        wandb_step_offset=wandb_step_offset,
     )
     trainer_adapt.eval_interval = 1  # Evaluate every epoch
 

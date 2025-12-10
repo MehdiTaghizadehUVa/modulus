@@ -16,8 +16,15 @@
 
 r"""Training modules for flood prediction."""
 
-from .domain_adaptation import adapt_model
-from .pretraining import pretrain_model
+# Use try/except to handle circular imports during module loading
+try:
+    from .domain_adaptation import adapt_model
+    from .pretraining import pretrain_model
+except ImportError:
+    # During initial module loading, imports may fail due to circular dependencies
+    # These will be available once all modules are loaded
+    adapt_model = None
+    pretrain_model = None
 
 __all__ = ["pretrain_model", "adapt_model"]
 
