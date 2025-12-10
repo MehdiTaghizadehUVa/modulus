@@ -158,6 +158,11 @@ checkpoint:
   resume_from_dir: null
   resume_from_source: null
   resume_from_adapt: null
+  # Pretraining checkpoint saving options
+  save_best: "source_val_l2"  # Metric to monitor for best model saving (e.g., "source_val_l2")
+                              # Set to null to disable best model saving
+  save_every: null  # Save checkpoint every N epochs (e.g., 10). Set to null to disable interval saving
+                    # Note: save_best takes precedence over save_every if both are set
 
 # Rollout output directory
 rollout:

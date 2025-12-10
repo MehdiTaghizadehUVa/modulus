@@ -113,15 +113,20 @@ def run_inference(cfg: DictConfig) -> None:
 
         # Create model (same as training)
         log_rank_zero.info("Creating GINO model...")
-        model = get_model(cfg)
-        # Optionally enable autoregressive residual connection if specified in config
-        autoregressive = False
-        if hasattr(cfg, "model") and hasattr(cfg.model, "autoregressive"):
-            autoregressive = cfg.model.autoregressive
-        model = GINOWrapper(model, autoregressive=autoregressive)
-        model = model.to(device)
+        # Convert config.model to dict to avoid struct mode issues with neuralop's get_model
+        # neuralop's get_model tries to pop from config, which doesn't work with struct mode
+        # It expects config.model to exist, so we wrap it in a new OmegaConf DictConfig
+        # (not in struct mode) that supports both attribute and dict access
+        model_config_dict = OmegaConf.to_container(cfg.model, resolve=True)
+        # Create a wrapper config that neuralop expects: {"model": {...}}
+        # Convert to OmegaConf DictConfig (not struct mode) so it supports attribute access
+        wrapper_config = OmegaConf.create({"model": model_config_dict})
+        gino_model = get_model(wrapper_config)
+        gino_model = gino_model.to(device)
 
-        # Load checkpoint
+        # Load checkpoint into the underlying GINO model first
+        # The checkpoint was saved from the GINO model (not the wrapper), so we need to
+        # load it into the raw GINO model, then wrap it
         if (checkpoint_path / "best_model_state_dict.pt").exists():
             save_name = "best_model"
         elif (checkpoint_path / "model_state_dict.pt").exists():
@@ -130,47 +135,58 @@ def run_inference(cfg: DictConfig) -> None:
             log_rank_zero.error(f"No checkpoint found in {checkpoint_path}")
             sys.exit(1)
 
-        model, _, _, _, _ = load_training_state(
+        # Load checkpoint into the underlying GINO model
+        gino_model, _, _, _, _ = load_training_state(
             save_dir=checkpoint_path,
             save_name=save_name,
-            model=model,
+            model=gino_model,
             optimizer=None,
             scheduler=None,
         )
         log_rank_zero.info(f"Loaded checkpoint: {save_name}")
 
-        # Load normalizers (they should be saved with the checkpoint)
-        # For now, we'll need to recreate them from training data
-        # In a full implementation, normalizers should be saved/loaded with checkpoints
-        log_rank_zero.warning("Normalizers need to be loaded from training. Using source data to recreate them.")
-        log_rank_zero.info("Loading source dataset to recreate normalizers...")
+        # Now wrap the loaded model with GINOWrapper
+        # Optionally enable autoregressive residual connection if specified in config
+        autoregressive = False
+        if hasattr(cfg, "model") and hasattr(cfg.model, "autoregressive"):
+            autoregressive = cfg.model.autoregressive
+        model = GINOWrapper(gino_model, autoregressive=autoregressive)
 
-        from datasets import FloodDatasetWithQueryPoints, NormalizedDataset
-        from utils.normalization import stack_and_fit_transform
+        # Load normalizers from checkpoint if available, otherwise recreate from source data
+        normalizers_path = checkpoint_path / "normalizers.pt"
+        if normalizers_path.exists():
+            log_rank_zero.info(f"Loading normalizers from checkpoint: {normalizers_path}")
+            normalizers = torch.load(normalizers_path, map_location=device)
+            log_rank_zero.info("Normalizers loaded from checkpoint")
+        else:
+            # Fallback: recreate normalizers from source data if not saved
+            log_rank_zero.info("Normalizers not found in checkpoint. Recreating from source data...")
+            from datasets import FloodDatasetWithQueryPoints, NormalizedDataset
+            from utils.normalization import stack_and_fit_transform
 
-        source_full_dataset = FloodDatasetWithQueryPoints(
-            data_root=cfg.source_data.root,
-            n_history=cfg.source_data.n_history,
-            xy_file=cfg.source_data.get("xy_file", None),
-            query_res=cfg.source_data.get("query_res", [64, 64]),
-            static_files=cfg.source_data.get("static_files", []),
-            dynamic_patterns=cfg.source_data.get("dynamic_patterns", {}),
-            boundary_patterns=cfg.source_data.get("boundary_patterns", {}),
-            raise_on_smaller=True,
-            skip_before_timestep=cfg.source_data.get("skip_before_timestep", 0),
-            noise_type="none",
-            noise_std=None,
-        )
+            source_full_dataset = FloodDatasetWithQueryPoints(
+                data_root=cfg.source_data.root,
+                n_history=cfg.source_data.n_history,
+                xy_file=cfg.source_data.get("xy_file", None),
+                query_res=cfg.source_data.get("query_res", [64, 64]),
+                static_files=cfg.source_data.get("static_files", []),
+                dynamic_patterns=cfg.source_data.get("dynamic_patterns", {}),
+                boundary_patterns=cfg.source_data.get("boundary_patterns", {}),
+                raise_on_smaller=True,
+                skip_before_timestep=cfg.source_data.get("skip_before_timestep", 0),
+                noise_type="none",
+                noise_std=None,
+            )
 
-        # Use a subset to fit normalizers (faster)
-        from torch.utils.data import random_split
+            # Use a subset to fit normalizers (faster)
+            from torch.utils.data import random_split
 
-        train_sz = min(100, int(0.9 * len(source_full_dataset)))  # Use up to 100 samples
-        source_train_subset, _ = random_split(source_full_dataset, [train_sz, len(source_full_dataset) - train_sz])
+            train_sz = min(100, int(0.9 * len(source_full_dataset)))  # Use up to 100 samples
+            source_train_subset, _ = random_split(source_full_dataset, [train_sz, len(source_full_dataset) - train_sz])
 
-        geom, static, boundary, dyn, tgt = collect_all_fields(source_train_subset, True)
-        normalizers, _ = stack_and_fit_transform(geom, static, boundary, dyn, tgt)
-        log_rank_zero.info("Normalizers recreated from source data")
+            geom, static, boundary, dyn, tgt = collect_all_fields(source_train_subset, True)
+            normalizers, _ = stack_and_fit_transform(geom, static, boundary, dyn, tgt)
+            log_rank_zero.info("Normalizers recreated from source data")
 
         # Create data processor
         data_processor = FloodGINODataProcessor(

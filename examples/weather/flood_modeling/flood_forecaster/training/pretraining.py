@@ -29,6 +29,7 @@ from torch.utils.data import DataLoader, random_split
 from neuralop.training import AdamW, Trainer
 from neuralop.losses import LpLoss
 from neuralop import get_model
+from neuralop.training.training_state import save_training_state
 
 from datasets import FloodDatasetWithQueryPoints, NormalizedDataset
 from data_processing import FloodGINODataProcessor, GINOWrapper, LpLossWrapper
@@ -255,6 +256,10 @@ def pretrain_model(config, device, is_logger, source_data_config, logger=None):
     logger.info(f"Starting training... Checkpoints will be saved to: {save_dir}")
     logger.info(f"Training samples: {len(source_train_ds)}, Validation samples: {len(source_val_ds)}")
 
+    # Get checkpoint saving options from config
+    save_best = config.checkpoint.get("save_best", None)
+    save_every = config.checkpoint.get("save_every", None)
+    
     trainer_src.train(
         train_loader=source_train_loader,
         test_loaders={"source_val": source_val_loader},
@@ -263,8 +268,30 @@ def pretrain_model(config, device, is_logger, source_data_config, logger=None):
         training_loss=l2loss,
         eval_losses={"l2": l2loss},
         save_dir=save_dir,
+        save_best=save_best,  # Save best model based on validation metric (from config)
+        save_every=save_every,  # Save checkpoint every N epochs (from config)
         resume_from_dir=config.checkpoint.get("resume_from_source", None),
     )
+    
+    # Explicitly save final pretrained model checkpoint
+    # Ensure directory exists before saving
+    os.makedirs(save_dir, exist_ok=True)
+    logger.info(f"Saving final pretrained model checkpoint to {save_dir}")
+    save_training_state(
+        save_dir=save_dir,
+        save_name="model",
+        model=model,
+        optimizer=optimizer_src,
+        scheduler=scheduler_src,
+        regularizer=None,
+        epoch=n_epochs - 1,  # Final epoch (0-indexed)
+    )
+    logger.info("Saved pretrained model checkpoint")
+    
+    # Save normalizers to checkpoint directory
+    normalizers_path = os.path.join(save_dir, "normalizers.pt")
+    torch.save(normalizers, normalizers_path)
+    logger.info(f"Saved normalizers to {normalizers_path}")
     
     logger.info("Pretraining completed!")
     return model, normalizers, trainer_src

@@ -26,7 +26,7 @@ For rollout evaluation and visualization, use inference.py instead.
 
 import os
 import sys
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import hydra
 import torch
@@ -53,6 +53,123 @@ from utils.normalization import (
     collect_all_fields,
     stack_and_fit_transform,
 )
+
+
+def _register_hydra_resolvers() -> None:
+    r"""
+    Register custom Hydra resolvers if needed.
+    
+    This function can be extended to register custom resolvers for the config.
+    Currently, OmegaConf provides built-in resolvers like oc.env for environment
+    variables, so no custom registration is needed.
+    
+    Note: The config uses ${VAR:default} syntax which is Hydra's legacy
+    environment variable interpolation. If this causes issues, consider migrating
+    to ${oc.env:VAR,default} syntax in the config file.
+    """
+    # Placeholder for future custom resolvers if needed
+    # oc.env is already built into OmegaConf, so no registration needed
+    pass
+
+
+def safe_config_to_dict(
+    cfg: DictConfig,
+    exclude_keys: Optional[list] = None,
+    logger: Optional[RankZeroLoggingWrapper] = None,
+) -> Dict[str, Any]:
+    r"""
+    Safely convert OmegaConf DictConfig to a Python dictionary for wandb logging.
+    
+    This function handles unresolved interpolations gracefully by:
+    1. Attempting full resolution first
+    2. Filtering out problematic keys if resolution fails
+    3. Falling back to partial resolution if needed
+    
+    Parameters
+    ----------
+    cfg : DictConfig
+        The OmegaConf configuration object to convert.
+    exclude_keys : list, optional
+        List of top-level keys to exclude from the output (e.g., ['rollout_data']).
+        Defaults to ['rollout_data'] since it's only needed for inference.
+    logger : RankZeroLoggingWrapper, optional
+        Logger instance for warning messages. If None, warnings are suppressed.
+    
+    Returns
+    -------
+    Dict[str, Any]
+        A Python dictionary representation of the config, suitable for wandb logging.
+    
+    Examples
+    --------
+    >>> config_dict = safe_config_to_dict(cfg, exclude_keys=['rollout_data'])
+    >>> wandb.init(config=config_dict)
+    """
+    if exclude_keys is None:
+        exclude_keys = ["rollout_data"]  # Default: exclude rollout_data (only for inference)
+    
+    # Strategy 1: Try full resolution first
+    try:
+        config_dict = OmegaConf.to_container(cfg, resolve=True)
+        # Remove excluded keys
+        for key in exclude_keys:
+            config_dict.pop(key, None)
+        return config_dict
+    except Exception as e:
+        if logger:
+            logger.info(
+                f"Config resolution encountered unresolved interpolations: {type(e).__name__}. "
+                f"Attempting filtered resolution..."
+            )
+    
+    # Strategy 2: Filter problematic keys, then resolve
+    try:
+        # Get unresolved config as dict
+        config_dict_unresolved = OmegaConf.to_container(cfg, resolve=False)
+        
+        # Remove excluded keys
+        filtered_dict = {
+            key: value
+            for key, value in config_dict_unresolved.items()
+            if key not in exclude_keys
+        }
+        
+        # Create new config from filtered dict and try to resolve
+        # Use struct=False to allow modifications during resolution
+        filtered_cfg = OmegaConf.create(filtered_dict)
+        OmegaConf.set_struct(filtered_cfg, False)
+        
+        try:
+            config_dict = OmegaConf.to_container(filtered_cfg, resolve=True)
+            return config_dict
+        except Exception:
+            # If resolution still fails, try resolving each top-level key individually
+            partially_resolved = {}
+            for key, value in filtered_dict.items():
+                try:
+                    # Try to resolve this key's section
+                    key_cfg = OmegaConf.create({key: value})
+                    resolved_key = OmegaConf.to_container(key_cfg, resolve=True)
+                    partially_resolved[key] = resolved_key[key]
+                except Exception:
+                    # If this key fails, include it unresolved
+                    if isinstance(value, DictConfig):
+                        partially_resolved[key] = OmegaConf.to_container(value, resolve=False)
+                    else:
+                        partially_resolved[key] = value
+            return partially_resolved
+    except Exception as e:
+        if logger:
+            logger.warning(
+                f"Could not fully resolve config: {type(e).__name__}. "
+                f"Using partially resolved config for wandb logging."
+            )
+    
+    # Strategy 3: Fallback to unresolved config (last resort)
+    config_dict = OmegaConf.to_container(cfg, resolve=False)
+    for key in exclude_keys:
+        config_dict.pop(key, None)
+    return config_dict
 
 
 def log_section(logger: RankZeroLoggingWrapper, title: str, char: str = "=", width: int = 60):
@@ -87,6 +204,9 @@ def train_flood_forecaster(cfg: DictConfig) -> None:
     SystemExit
         If critical errors occur during execution.
     """
+    # Register custom Hydra resolvers for environment variable interpolation
+    _register_hydra_resolvers()
+    
     # Initialize distributed manager (must be called first)
     DistributedManager.initialize()
     dist = DistributedManager()
@@ -147,14 +267,36 @@ def train_flood_forecaster(cfg: DictConfig) -> None:
         # Initialize wandb if logging is enabled
         if cfg.wandb.log and is_logger:
             log_rank_zero.info("Initializing Weights & Biases logging...")
-            wandb.login(key=get_wandb_api_key())
+            # Try to login if API key is available, but don't fail if it's not
+            # wandb.init() will handle authentication automatically if user has logged in via CLI
+            try:
+                api_key = get_wandb_api_key()
+                if api_key:
+                    wandb.login(key=api_key)
+                    log_rank_zero.info("W&B API key found and logged in")
+            except (KeyError, FileNotFoundError, Exception) as e:
+                # API key not found - this is OK, wandb.init() will use existing login or prompt
+                log_rank_zero.info(
+                    "W&B API key not found in environment or file. "
+                    "Will use existing wandb login or prompt for authentication."
+                )
+            
             wandb_name = (
                 cfg.wandb.name
                 if cfg.wandb.name
                 else f"flood-run_{getattr(cfg.source_data, 'resolution', 64)}"
             )
+            
+            # Safely convert config to dict for wandb, handling unresolved interpolations gracefully
+            # This excludes 'rollout_data' by default since it's only needed for inference
+            wandb_config_dict = safe_config_to_dict(
+                cfg,
+                exclude_keys=["rollout_data"],  # Not needed for training logging
+                logger=log_rank_zero,
+            )
+            
             wandb_init_args = dict(
-                config=OmegaConf.to_container(cfg, resolve=True),
+                config=wandb_config_dict,
                 name=wandb_name,
                 group=cfg.wandb.group,
                 project=cfg.wandb.project,
@@ -253,6 +395,13 @@ def train_flood_forecaster(cfg: DictConfig) -> None:
         # Stage 2: Domain adaptation
         log_section(log_rank_zero, "Stage 2: Domain Adaptation")
         data_processor = trainer_src.data_processor
+        
+        # Calculate wandb step offset to continue from pretraining
+        # neuralop Trainer uses step=epoch+1, so if pretraining ran for n_epochs_source,
+        # domain adaptation should start from step n_epochs_source + 1
+        n_epochs_source = cfg.training.get("n_epochs_source", cfg.training.get("n_epochs", 100))
+        wandb_step_offset = n_epochs_source if (cfg.wandb.log and is_logger) else 0
+        
         model, domain_classifier, trainer_adapt = adapt_model(
             model=model,
             normalizers=normalizers,
@@ -264,6 +413,7 @@ def train_flood_forecaster(cfg: DictConfig) -> None:
             source_val_loader=source_val_loader,
             target_data_config=cfg.target_data,
             logger=log_rank_zero,
+            wandb_step_offset=wandb_step_offset,
         )
 
         if cfg.wandb.log and is_logger:
