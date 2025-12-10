@@ -191,8 +191,8 @@ def temp_data_dir(tmp_path):
     data_dir = tmp_path / "test_data"
     data_dir.mkdir()
 
-    # Create train_.txt
-    train_file = data_dir / "train_.txt"
+    # Create train.txt
+    train_file = data_dir / "train.txt"
     train_file.write_text("run_001\nrun_002\n")
 
     # Create XY file
@@ -365,11 +365,11 @@ def test_flood_dataset_missing_data_root():
 
 
 def test_flood_dataset_missing_train_file(tmp_path):
-    """Test FloodDatasetWithQueryPoints fails with missing train_.txt."""
+    """Test FloodDatasetWithQueryPoints fails with missing train.txt."""
     data_dir = tmp_path / "test_data"
     data_dir.mkdir()
 
-    with pytest.raises(FileNotFoundError, match="train_.txt"):
+    with pytest.raises(FileNotFoundError, match="train.txt"):
         FloodDatasetWithQueryPoints(
             data_root=str(data_dir),
             n_history=3,
