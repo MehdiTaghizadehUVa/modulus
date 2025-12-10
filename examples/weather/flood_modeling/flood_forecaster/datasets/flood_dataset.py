@@ -108,7 +108,7 @@ class FloodDatasetWithQueryPoints(Dataset):
                 raise ValueError("noise_std must be a list of exactly 3 floats for WD, VX, VY.")
 
         # Read run IDs from train.txt
-        train_txt = self.data_root / "train_.txt"
+        train_txt = self.data_root / "train.txt"
         if not train_txt.exists():
             raise FileNotFoundError(f"Expected train.txt at {train_txt}, not found!")
         try:
@@ -298,7 +298,8 @@ class FloodDatasetWithQueryPoints(Dataset):
             step_sigma_t = torch.tensor(step_sigma, device=device).view(1, 1, 3)
             offset = torch.zeros((num_cells, 3), device=device)
             for t in range(n_history):
-                step_n = torch.randn((num_cells, 3), device=device) * step_sigma_t[0, 0]
+                # Broadcast step_sigma_t across channels: (1, 1, 3) -> (3,)
+                step_n = torch.randn((num_cells, 3), device=device) * step_sigma_t.squeeze()
                 offset += step_n
                 dynamic_hist[t] += offset
 

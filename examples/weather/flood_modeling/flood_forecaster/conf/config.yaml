@@ -41,6 +41,9 @@ source_data:
   query_res: [48, 48]
   xy_file: "M40_XY.txt"
   static_files:
+    # Note: M40_XY.txt is included here as a static feature (XY coordinates as features)
+    # The xy_file parameter loads it separately for geometry, while static_files includes it as a feature
+    # This is intentional for flood modeling where XY coordinates are used both for geometry and as features
     - "M40_XY.txt"
     - "M40_CA.txt"
     - "M40_CE.txt"
@@ -69,6 +72,9 @@ target_data:
   query_res: [48, 48]
   xy_file: "M40_XY.txt"
   static_files:
+    # Note: M40_XY.txt is included here as a static feature (XY coordinates as features)
+    # The xy_file parameter loads it separately for geometry, while static_files includes it as a feature
+    # This is intentional for flood modeling where XY coordinates are used both for geometry and as features
     - "M40_XY.txt"
     - "M40_CA.txt"
     - "M40_CE.txt"
@@ -93,6 +99,9 @@ rollout_data:
   root: "${ROLLOUT_DATA_ROOT:/path/to/rollout/data}"  # Set ROLLOUT_DATA_ROOT environment variable or update this path
   xy_file: "M40_XY.txt"
   static_files:
+    # Note: M40_XY.txt is included here as a static feature (XY coordinates as features)
+    # The xy_file parameter loads it separately for geometry, while static_files includes it as a feature
+    # This is intentional for flood modeling where XY coordinates are used both for geometry and as features
     - "M40_XY.txt"
     - "M40_CA.txt"
     - "M40_CE.txt"

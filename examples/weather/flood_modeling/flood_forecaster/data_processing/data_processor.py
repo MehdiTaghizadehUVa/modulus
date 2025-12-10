@@ -255,7 +255,8 @@ class GINOWrapper(physicsnemo.Module):
                         f"Expected x.shape[1] ({x.shape[1]}) to match input_geom n_in ({n_in_geom})"
                     )
         
-        # Filter out unexpected kwargs (like 'y') - just ignore them silently
+        # Filter out unexpected kwargs (e.g., 'y' target) - GINO forward doesn't accept these
+        # These are handled separately in the training loop
         
         # Determine batch size (matching new GINO logic)
         if x is None:

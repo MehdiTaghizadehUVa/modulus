@@ -28,6 +28,11 @@ import torch.nn as nn
 
 import physicsnemo
 
+# Conditionally include CUDA in device parametrization only if available
+_DEVICES = ["cpu"]
+if torch.cuda.is_available():
+    _DEVICES.append("cuda:0")
+
 # Add the FloodForecaster example to the path
 _examples_dir = Path(__file__).parent.parent.parent / "examples" / "weather" / "flood_modeling" / "flood_forecaster"
 if str(_examples_dir) not in sys.path:
@@ -138,7 +143,7 @@ def mock_gino_model():
     return model
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_data_processor_init(device):
     """Test FloodGINODataProcessor initialization."""
     processor = FloodGINODataProcessor(device=device)
@@ -150,7 +155,7 @@ def test_data_processor_init(device):
     assert isinstance(processor, nn.Module)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_data_processor_preprocess(sample_dict, device):
     """Test preprocessing with batched input."""
     processor = FloodGINODataProcessor(device=device)
@@ -172,7 +177,7 @@ def test_data_processor_preprocess(sample_dict, device):
     assert result["x"].dim() == 3  # (B, n_cells, features)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_data_processor_postprocess_training(device):
     """Test postprocessing in training mode (no inverse transform)."""
     mock_norm = MagicMock()
@@ -188,7 +193,7 @@ def test_data_processor_postprocess_training(device):
     mock_norm.inverse_transform.assert_not_called()
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_data_processor_postprocess_eval(device):
     """Test postprocessing in eval mode (applies inverse transform)."""
     mock_norm = MagicMock()
@@ -206,7 +211,7 @@ def test_data_processor_postprocess_eval(device):
     assert torch.allclose(result_out, torch.ones(2, 100, 3) * 2)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_ginowrapper_init(mock_gino_model, device):
     """Test GINOWrapper initialization."""
     wrapper = GINOWrapper(mock_gino_model)
@@ -216,14 +221,14 @@ def test_ginowrapper_init(mock_gino_model, device):
     assert wrapper.autoregressive is False  # Default value
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_ginowrapper_init_autoregressive(mock_gino_model, device):
     """Test GINOWrapper initialization with autoregressive=True."""
     wrapper = GINOWrapper(mock_gino_model, autoregressive=True)
     assert wrapper.autoregressive is True
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_ginowrapper_forward_filters_kwargs(mock_gino_model, device):
     """Test that GINOWrapper forward filters out unexpected kwargs."""
     wrapper = GINOWrapper(mock_gino_model)
@@ -254,7 +259,7 @@ def test_ginowrapper_forward_filters_kwargs(mock_gino_model, device):
     assert result.shape[2] == 3  # out_channels
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_ginowrapper_return_features(mock_gino_model, device):
     """Test that GINOWrapper returns features when return_features=True."""
     wrapper = GINOWrapper(mock_gino_model)
@@ -291,7 +296,7 @@ def test_ginowrapper_return_features(mock_gino_model, device):
     assert features.shape[3] == 8  # W
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_ginowrapper_autoregressive(mock_gino_model, device):
     """Test that GINOWrapper applies residual connection when autoregressive=True."""
     wrapper = GINOWrapper(mock_gino_model, autoregressive=True)
@@ -330,7 +335,7 @@ def test_ginowrapper_autoregressive(mock_gino_model, device):
     assert torch.allclose(out, expected, atol=1e-5)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_ginowrapper_autoregressive_with_features(mock_gino_model, device):
     """Test autoregressive + return_features together."""
     wrapper = GINOWrapper(mock_gino_model, autoregressive=True)
@@ -369,7 +374,7 @@ def test_ginowrapper_autoregressive_with_features(mock_gino_model, device):
     assert features.shape[1] == 64  # fno_hidden_channels
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_lploss_wrapper(device):
     """Test LpLossWrapper filters kwargs correctly."""
     mock_loss = MagicMock(return_value=torch.tensor(0.5))
@@ -392,7 +397,7 @@ def test_lploss_wrapper(device):
     mock_loss.assert_called_once_with(y_pred, y)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_lploss_wrapper_with_real_lploss(device, pytestconfig):
     """Test LpLossWrapper with real LpLoss from neuralop."""
     import sys
@@ -435,7 +440,7 @@ def _instantiate_model(cls, seed: int = 0, **kwargs):
     return model
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 @pytest.mark.parametrize(
     "config",
     ["default", "custom"],
@@ -456,7 +461,7 @@ def test_ginowrapper_constructor(config, device, mock_gino_model):
     assert isinstance(model, physicsnemo.Module)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 @pytest.mark.parametrize(
     "config",
     ["default", "custom"],
@@ -483,7 +488,7 @@ def test_flood_gino_data_processor_constructor(config, device):
     assert isinstance(model, physicsnemo.Module)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_ginowrapper_from_checkpoint(device, mock_gino_model):
     """Test loading GINOWrapper from checkpoint and verify outputs."""
     from pathlib import Path
@@ -521,7 +526,7 @@ def test_ginowrapper_from_checkpoint(device, mock_gino_model):
     checkpoint_path.unlink(missing_ok=True)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_flood_gino_data_processor_from_checkpoint(device):
     """Test loading FloodGINODataProcessor from checkpoint and verify outputs."""
     from pathlib import Path

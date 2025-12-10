@@ -135,9 +135,15 @@ class FloodRolloutTestDatasetNew(Dataset):
             raise ValueError("No hydrographs have enough time steps for rollout evaluation.")
 
         # Store the geometry/static from the first valid sample
-        sample0 = self.__getitem__(0)
-        self.geometry = sample0["geometry"]
-        self.static = sample0["static"]
+        # Safe to call __getitem__ here because all data has been loaded in _load_all_runs()
+        # and valid_run_ids has been populated, ensuring the dataset is fully initialized
+        if len(self.valid_run_ids) > 0:
+            sample0 = self.__getitem__(0)
+            self.geometry = sample0["geometry"]
+            self.static = sample0["static"]
+        else:
+            # This should never happen due to the check above, but defensive programming
+            raise RuntimeError("Cannot initialize geometry/static: no valid runs available")
 
     def _load_xy_file(self):
         r"""Load and normalize XY coordinates."""
@@ -258,7 +264,9 @@ class FloodRolloutTestDatasetNew(Dataset):
         if boundary_keys:
             boundary = torch.cat([self.boundary_data[run_id][var] for var in boundary_keys], dim=-1)
         else:
-            boundary = torch.zeros((dynamic.shape[0], self.reference_cell_count, 1), device=self.xy_coords.device)
+            # Ensure device consistency: xy_coords is on CPU, match dynamic tensor device
+            boundary_device = dynamic.device if isinstance(dynamic, torch.Tensor) else self.xy_coords.device
+            boundary = torch.zeros((dynamic.shape[0], self.reference_cell_count, 1), device=boundary_device)
 
         sample = {
             "run_id": run_id,

@@ -1068,6 +1068,9 @@ def adapt_model(
         optimizer=optimizer_adapt,
         scheduler=scheduler_adapt,
         training_loss=l2loss,
+        # da_class_loss_weight controls adversarial training strength
+        # Default 0.0 disables adversarial training (standard fine-tuning)
+        # Set to positive value (e.g., 0.1) to enable domain adaptation
         class_loss_weight=config.training.get("da_class_loss_weight", 0.0),
         adaptation_epochs=config.training.get("n_epochs_adapt", 50),
         save_every=None,  # Save at end only, or set to save interval

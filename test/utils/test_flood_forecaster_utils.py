@@ -36,7 +36,13 @@ from utils.normalization import (
 )
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+# Conditionally include CUDA in device parametrization only if available
+_DEVICES = ["cpu"]
+if torch.cuda.is_available():
+    _DEVICES.append("cuda:0")
+
+
+@pytest.mark.parametrize("device", _DEVICES)
 def test_collect_all_fields_with_target(device):
     """Test collecting fields with target."""
     # Create mock dataset
@@ -60,7 +66,7 @@ def test_collect_all_fields_with_target(device):
     assert len(target) == 5
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_collect_all_fields_without_target(device):
     """Test collecting fields without target."""
     mock_dataset = [
@@ -78,7 +84,7 @@ def test_collect_all_fields_without_target(device):
     assert len(result) == 5  # geom, static, boundary, dyn, target (empty)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_collect_all_fields_with_cell_area(device):
     """Test collecting fields with cell_area."""
     mock_dataset = [
@@ -99,7 +105,7 @@ def test_collect_all_fields_with_cell_area(device):
     assert len(result[5]) == 5  # 5 cell_area tensors
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_stack_and_fit_transform_creates_normalizers(device):
     """Test that stack_and_fit_transform creates normalizers."""
     geom = [torch.rand(100, 2).to(device) for _ in range(5)]
@@ -120,7 +126,7 @@ def test_stack_and_fit_transform_creates_normalizers(device):
     assert big_tensors["static"].shape[0] == 5
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_stack_and_fit_transform_uses_existing(device):
     """Test using existing normalizers."""
     geom = [torch.rand(100, 2).to(device) for _ in range(5)]
@@ -154,7 +160,7 @@ def test_stack_and_fit_transform_uses_existing(device):
     assert new_tensors["geometry"].shape[0] == 3
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_transform_with_existing_normalizers(device):
     """Test transform_with_existing_normalizers."""
     # Create and fit normalizers

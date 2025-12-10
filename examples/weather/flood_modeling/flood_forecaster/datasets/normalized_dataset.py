@@ -28,7 +28,7 @@ class NormalizedDataset(Dataset):
     Dataset wrapper that provides normalized data with query points.
     """
 
-    def __init__(self, geometry, static, boundary, dynamic, target=None, query_res=[64, 64], cell_area=None):
+    def __init__(self, geometry, static, boundary, dynamic, target=None, query_res=None, cell_area=None):
         r"""
         Initialize normalized dataset.
 
@@ -45,7 +45,7 @@ class NormalizedDataset(Dataset):
         target : torch.Tensor, optional
             Normalized target tensor of shape :math:`(N, n_{cells}, C_{target})`.
         query_res : List[int], optional, default=[64, 64]
-            Query resolution [height, width].
+            Query resolution [height, width]. If None, defaults to [64, 64].
         cell_area : torch.Tensor, optional
             Cell area tensor of shape :math:`(N, n_{cells})`.
         """
@@ -54,7 +54,8 @@ class NormalizedDataset(Dataset):
         self.boundary = boundary
         self.dynamic = dynamic
         self.target = target
-        self.query_res = query_res
+        # Use immutable default to avoid mutable default argument issues
+        self.query_res = query_res if query_res is not None else [64, 64]
         self.cell_area = cell_area
 
         if self.geometry is not None and self.geometry.shape[0] > 0:
@@ -95,7 +96,7 @@ class NormalizedRolloutTestDataset(Dataset):
     Dataset wrapper for normalized rollout test samples.
     """
 
-    def __init__(self, normalized_samples, query_res=[64, 64]):
+    def __init__(self, normalized_samples, query_res=None):
         r"""
         Initialize normalized rollout test dataset.
 
@@ -104,10 +105,11 @@ class NormalizedRolloutTestDataset(Dataset):
         normalized_samples : List[Dict]
             List of normalized sample dictionaries.
         query_res : List[int], optional, default=[64, 64]
-            Query resolution [height, width].
+            Query resolution [height, width]. If None, defaults to [64, 64].
         """
         self.normalized_samples = normalized_samples
-        self.query_res = query_res
+        # Use immutable default to avoid mutable default argument issues
+        self.query_res = query_res if query_res is not None else [64, 64]
 
         if len(self.normalized_samples) > 0:
             geom_sample = self.normalized_samples[0]["geometry"].cpu().numpy()

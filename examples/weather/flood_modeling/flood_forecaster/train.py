@@ -217,7 +217,6 @@ def train_flood_forecaster(cfg: DictConfig) -> None:
 
     log_section(log_rank_zero, "FLOOD FORECASTER - Training and Evaluation Pipeline")
 
-    config = None
     try:
         # Get device from distributed manager or config
         device = dist.device if dist.device is not None else cfg.distributed.device
@@ -428,14 +427,14 @@ def train_flood_forecaster(cfg: DictConfig) -> None:
 
     except KeyboardInterrupt:
         log_rank_zero.warning("Training interrupted by user")
-        if config is not None and hasattr(config, "wandb") and config.wandb.log:
+        if cfg.wandb.log and is_logger:
             wandb.finish()
         sys.exit(1)
     except Exception as e:
         import traceback
         log_rank_zero.error(f"Fatal error in main pipeline: {e}")
         log_rank_zero.error(traceback.format_exc())
-        if config is not None and hasattr(config, "wandb") and config.wandb.log:
+        if cfg.wandb.log and is_logger:
             wandb.finish()
         raise
 

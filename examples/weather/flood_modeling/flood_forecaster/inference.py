@@ -21,7 +21,6 @@ This script loads a trained model checkpoint and performs rollout evaluation
 on test data, generating visualizations and metrics.
 """
 
-import os
 import sys
 from pathlib import Path
 
@@ -85,7 +84,6 @@ def run_inference(cfg: DictConfig) -> None:
     try:
         # Get device from distributed manager or config
         device = dist.device if dist.device is not None else cfg.distributed.device
-        is_logger = dist.rank == 0
 
         # Log device information
         log_rank_zero.info("=" * 50)

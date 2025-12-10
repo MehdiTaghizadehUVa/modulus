@@ -122,6 +122,13 @@ def stack_and_fit_transform(
     ValueError
         If lists are empty or have incompatible shapes.
     """
+    # Filter out None values before stacking to avoid errors
+    geom_list = [g for g in geom_list if g is not None] if geom_list else []
+    static_list = [s for s in static_list if s is not None] if static_list else []
+    boundary_list = [b for b in boundary_list if b is not None] if boundary_list else []
+    dyn_list = [d for d in dyn_list if d is not None] if dyn_list else []
+    tgt_list = [t for t in tgt_list if t is not None] if tgt_list else []
+    
     geometry_big = torch.stack(geom_list, dim=0) if geom_list else None
     static_big = torch.stack(static_list, dim=0) if static_list else None
     boundary_big = torch.stack(boundary_list, dim=0) if boundary_list else None
@@ -168,9 +175,19 @@ def stack_and_fit_transform(
             target_big = normalizers["target"].transform(target_big)
 
     if dynamic_big is not None:
-        if "target" in normalizers:
+        if "target" in normalizers and normalizers["target"] is not None:
+            # Use target normalizer for dynamic fields if available
             dynamic_big = normalizers["target"].transform(dynamic_big)
-        normalizers["dynamic"] = normalizers["target"]
+            normalizers["dynamic"] = normalizers["target"]
+        elif fit_normalizers:
+            # Create separate normalizer for dynamic if target is unavailable
+            dynamic_norm = UnitGaussianNormalizer(dim=[0, 1, 2])
+            dynamic_norm.fit(dynamic_big)
+            dynamic_big = dynamic_norm.transform(dynamic_big)
+            normalizers["dynamic"] = dynamic_norm
+        elif "dynamic" in normalizers:
+            # Use existing dynamic normalizer if available
+            dynamic_big = normalizers["dynamic"].transform(dynamic_big)
 
     big_tensors = {
         "geometry": geometry_big,

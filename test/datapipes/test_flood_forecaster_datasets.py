@@ -25,6 +25,11 @@ import pytest
 import torch
 from torch.utils.data import Dataset
 
+# Conditionally include CUDA in device parametrization only if available
+_DEVICES = ["cpu"]
+if torch.cuda.is_available():
+    _DEVICES.append("cuda:0")
+
 # Add the FloodForecaster example to the path
 _examples_dir = Path(__file__).parent.parent.parent / "examples" / "weather" / "flood_modeling" / "flood_forecaster"
 if str(_examples_dir) not in sys.path:
@@ -58,7 +63,7 @@ def sample_tensors():
     }
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_normalized_dataset_constructor(sample_tensors, device):
     """Test NormalizedDataset constructor and basic properties."""
     ds = NormalizedDataset(
@@ -75,7 +80,7 @@ def test_normalized_dataset_constructor(sample_tensors, device):
     assert isinstance(ds, Dataset)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_normalized_dataset_getitem(sample_tensors, device):
     """Test NormalizedDataset __getitem__ returns correct structure."""
     ds = NormalizedDataset(
@@ -147,7 +152,7 @@ def rollout_samples():
     ]
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_normalized_rollout_dataset_constructor(rollout_samples, device):
     """Test NormalizedRolloutTestDataset constructor."""
     ds = NormalizedRolloutTestDataset(rollout_samples, query_res=[8, 8])
@@ -157,7 +162,7 @@ def test_normalized_rollout_dataset_constructor(rollout_samples, device):
     assert isinstance(ds, Dataset)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_normalized_rollout_dataset_getitem(rollout_samples, device):
     """Test NormalizedRolloutTestDataset __getitem__ returns correct structure."""
     ds = NormalizedRolloutTestDataset(rollout_samples, query_res=[8, 8])
@@ -262,14 +267,16 @@ def temp_rollout_dir(tmp_path):
     return data_dir
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_flood_dataset_with_query_points_init(temp_data_dir, device):
     """Test FloodDatasetWithQueryPoints initialization."""
+    # Note: xy_file should not be included in static_files to avoid duplication
+    # The xy_file is loaded separately for geometry, while static_files are for additional features
     dataset = FloodDatasetWithQueryPoints(
         data_root=str(temp_data_dir),
         n_history=3,
         xy_file="M40_XY.txt",
-        static_files=["M40_XY.txt", "M40_CA.txt", "M40_CE.txt"],
+        static_files=["M40_CA.txt", "M40_CE.txt"],  # Exclude xy_file to avoid duplication
         dynamic_patterns={
             "WD": "M40_WD_{}.txt",
             "VX": "M40_VX_{}.txt",
@@ -284,7 +291,7 @@ def test_flood_dataset_with_query_points_init(temp_data_dir, device):
     assert len(dataset.run_ids) == 2
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_flood_dataset_with_query_points_getitem(temp_data_dir, device):
     """Test FloodDatasetWithQueryPoints __getitem__ returns correct structure."""
     dataset = FloodDatasetWithQueryPoints(
@@ -320,7 +327,7 @@ def test_flood_dataset_with_query_points_getitem(temp_data_dir, device):
         assert sample["target"].shape == (100, 3)  # n_cells, 3 channels
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_flood_dataset_noise_types(temp_data_dir, device):
     """Test different noise types in FloodDatasetWithQueryPoints."""
     noise_types = ["none", "only_last", "correlated", "uncorrelated", "random_walk"]
@@ -381,7 +388,7 @@ def test_flood_dataset_invalid_noise_std(temp_data_dir):
         )
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_flood_rollout_test_dataset_new_init(temp_rollout_dir, device):
     """Test FloodRolloutTestDatasetNew initialization."""
     dataset = FloodRolloutTestDatasetNew(
@@ -404,7 +411,7 @@ def test_flood_rollout_test_dataset_new_init(temp_rollout_dir, device):
     assert len(dataset.valid_run_ids) > 0
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_flood_rollout_test_dataset_new_getitem(temp_rollout_dir, device):
     """Test FloodRolloutTestDatasetNew __getitem__ returns correct structure."""
     dataset = FloodRolloutTestDatasetNew(

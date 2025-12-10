@@ -77,9 +77,7 @@ def create_rollout_animation(
         Time step size in seconds.
     """
     # Convert inputs to numpy arrays
-    if isinstance(geometry, np.ndarray):
-        geometry = geometry
-    elif hasattr(geometry, "cpu"):
+    if not isinstance(geometry, np.ndarray) and hasattr(geometry, "cpu"):
         geometry = geometry.cpu().numpy()
     x_coords, y_coords = geometry[:, 0], geometry[:, 1]
 

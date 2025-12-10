@@ -28,6 +28,11 @@ import torch.nn as nn
 
 import physicsnemo
 
+# Conditionally include CUDA in device parametrization only if available
+_DEVICES = ["cpu"]
+if torch.cuda.is_available():
+    _DEVICES.append("cuda:0")
+
 # Add the FloodForecaster example to the path
 _examples_dir = Path(__file__).parent.parent.parent / "examples" / "weather" / "flood_modeling" / "flood_forecaster"
 if str(_examples_dir) not in sys.path:
@@ -76,7 +81,7 @@ from training.domain_adaptation import (
 from training.pretraining import create_scheduler
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_create_scheduler_step_lr(device):
     """Test StepLR scheduler creation."""
     model = nn.Linear(10, 10).to(device)
@@ -94,7 +99,7 @@ def test_create_scheduler_step_lr(device):
     assert isinstance(scheduler, torch.optim.lr_scheduler.StepLR)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_create_scheduler_cosine_annealing(device):
     """Test CosineAnnealingLR scheduler creation."""
     model = nn.Linear(10, 10).to(device)
@@ -111,7 +116,7 @@ def test_create_scheduler_cosine_annealing(device):
     assert isinstance(scheduler, torch.optim.lr_scheduler.CosineAnnealingLR)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_create_scheduler_reduce_lr_on_plateau(device):
     """Test ReduceLROnPlateau scheduler creation."""
     model = nn.Linear(10, 10).to(device)
@@ -129,7 +134,7 @@ def test_create_scheduler_reduce_lr_on_plateau(device):
     assert isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_gradient_reversal_forward(device):
     """Test gradient reversal forward pass is identity."""
     grl = GradientReversal(lambda_max=1.0)
@@ -140,7 +145,7 @@ def test_gradient_reversal_forward(device):
     assert torch.allclose(x, y)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_gradient_reversal_backward(device):
     """Test gradient reversal backward pass negates gradient."""
     grl = GradientReversal(lambda_max=1.0)
@@ -187,7 +192,7 @@ def da_config():
     return DictLike()
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_cnn_domain_classifier_init(da_config, device):
     """Test CNN domain classifier initialization."""
     classifier = CNNDomainClassifier(in_channels=64, lambda_max=1.0, da_cfg=da_config).to(device)
@@ -197,7 +202,7 @@ def test_cnn_domain_classifier_init(da_config, device):
     assert isinstance(classifier.grl, GradientReversal)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_cnn_domain_classifier_forward(da_config, device):
     """Test CNN domain classifier forward pass."""
     classifier = CNNDomainClassifier(in_channels=64, lambda_max=1.0, da_cfg=da_config).to(device)
@@ -208,7 +213,7 @@ def test_cnn_domain_classifier_forward(da_config, device):
     assert y.shape == (4, 1)  # (B, fc_dim)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_domain_adaptation_trainer_init(device):
     """Test DomainAdaptationTrainer initialization."""
     mock_model = MagicMock(spec=nn.Module)
@@ -231,7 +236,7 @@ def test_domain_adaptation_trainer_init(device):
     assert trainer.device == device
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_gradient_reversal_set_lambda(device):
     """Test setting lambda value in GradientReversal."""
     grl = GradientReversal(lambda_max=1.0)
@@ -240,7 +245,7 @@ def test_gradient_reversal_set_lambda(device):
     assert grl.lambda_ == 0.5
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_gradient_reversal_lambda_scales_gradient(device):
     """Test that lambda scales the reversed gradient."""
     grl = GradientReversal(lambda_max=0.5)
@@ -258,7 +263,7 @@ def test_gradient_reversal_lambda_scales_gradient(device):
     assert torch.allclose(x.grad, -0.5 * torch.ones_like(x.grad))
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_create_scheduler_unknown_raises(device):
     """Test that unknown scheduler raises ValueError."""
     model = nn.Linear(10, 10).to(device)
@@ -274,7 +279,7 @@ def test_create_scheduler_unknown_raises(device):
         create_scheduler(optimizer, config)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_domain_adaptation_trainer_eval_interval(device):
     """Test DomainAdaptationTrainer eval_interval property."""
     mock_model = MagicMock(spec=nn.Module)
@@ -296,7 +301,7 @@ def test_domain_adaptation_trainer_eval_interval(device):
     assert trainer.eval_interval == 5
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_domain_adaptation_trainer_on_epoch_start(device):
     """Test DomainAdaptationTrainer on_epoch_start method."""
     mock_model = MagicMock(spec=nn.Module)
@@ -315,7 +320,7 @@ def test_domain_adaptation_trainer_on_epoch_start(device):
     assert result is None
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_cnn_domain_classifier_missing_config(device):
     """Test CNNDomainClassifier raises error with missing config."""
     with pytest.raises(ValueError, match="conv_layers"):
@@ -338,7 +343,7 @@ def _instantiate_model(cls, seed: int = 0, **kwargs):
     return model
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 @pytest.mark.parametrize(
     "config",
     ["default", "custom"],
@@ -358,7 +363,7 @@ def test_gradient_reversal_constructor(config, device):
     assert isinstance(model, physicsnemo.Module)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 @pytest.mark.parametrize(
     "config",
     ["default", "custom"],
@@ -400,7 +405,7 @@ def test_cnn_domain_classifier_constructor(config, device):
     assert isinstance(model, physicsnemo.Module)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 @pytest.mark.parametrize(
     "config",
     ["default", "custom"],
@@ -437,7 +442,7 @@ def test_gradient_reversal_non_regression(device, config):
     assert torch.allclose(out, out_ref, atol=1e-5, rtol=1e-5)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 @pytest.mark.parametrize(
     "config",
     ["default", "custom"],
@@ -507,10 +512,15 @@ def test_cnn_domain_classifier_non_regression(device, config):
     # Use relaxed tolerance for numerical precision differences across devices and architectures
     # The differences can be due to floating point precision variations, especially for custom config
     # where the model structure (in_channels=128) is different from default (in_channels=64)
+    # Note: atol=1.0 is intentionally relaxed for CNNDomainClassifier due to:
+    # 1. Different floating-point precision between CPU/CUDA
+    # 2. Architecture-dependent numerical variations (custom vs default configs)
+    # 3. Non-regression test validates functional correctness, not exact bit-level precision
+    # This tolerance still catches significant regressions while allowing for expected numerical drift
     assert torch.allclose(out, out_ref, atol=1.0, rtol=1e-2)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_gradient_reversal_from_checkpoint(device):
     """Test loading GradientReversal from checkpoint and verify outputs."""
     import physicsnemo
@@ -543,7 +553,7 @@ def test_gradient_reversal_from_checkpoint(device):
     checkpoint_path.unlink(missing_ok=True)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_cnn_domain_classifier_from_checkpoint(device):
     """Test loading CNNDomainClassifier from checkpoint and verify outputs."""
     import physicsnemo
