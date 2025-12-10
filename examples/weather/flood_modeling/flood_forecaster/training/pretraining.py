@@ -80,7 +80,21 @@ def create_scheduler(optimizer, config, logger=None):
         raise ValueError(f"Unknown scheduler {scheduler_name}")
 
     if logger:
-        logger.debug(f"Created {scheduler_name} scheduler")
+        # Safely log debug message - PythonLogger doesn't have debug method
+        # Access underlying logging.Logger if available (PythonLogger wraps it)
+        try:
+            # Handle RankZeroLoggingWrapper which wraps PythonLogger
+            if hasattr(logger, 'obj') and hasattr(logger.obj, 'logger'):
+                logger.obj.logger.debug(f"Created {scheduler_name} scheduler")
+            # Handle direct PythonLogger
+            elif hasattr(logger, 'logger') and hasattr(logger.logger, 'debug'):
+                logger.logger.debug(f"Created {scheduler_name} scheduler")
+            # Fallback: try direct debug method (for loggers that support it)
+            elif hasattr(logger, 'debug'):
+                logger.debug(f"Created {scheduler_name} scheduler")
+        except (AttributeError, TypeError):
+            # Skip debug logging if not available (not critical for scheduler creation)
+            pass
     return scheduler
 
 
@@ -183,7 +197,16 @@ def pretrain_model(config, device, is_logger, source_data_config, logger=None):
     
     # Create model
     logger.info("Creating GINO model...")
-    model = get_model(config)
+    # Convert config.model to dict to avoid struct mode issues with neuralop's get_model
+    # neuralop's get_model tries to pop from config, which doesn't work with struct mode
+    # It expects config.model to exist, so we wrap it in a new OmegaConf DictConfig
+    # (not in struct mode) that supports both attribute and dict access
+    from omegaconf import OmegaConf
+    model_config_dict = OmegaConf.to_container(config.model, resolve=True)
+    # Create a wrapper config that neuralop expects: {"model": {...}}
+    # Convert to OmegaConf DictConfig (not struct mode) so it supports attribute access
+    wrapper_config = OmegaConf.create({"model": model_config_dict})
+    model = get_model(wrapper_config)
     n_params = sum(p.numel() for p in model.parameters())
     logger.info(f"Model created with {n_params:,} parameters")
     

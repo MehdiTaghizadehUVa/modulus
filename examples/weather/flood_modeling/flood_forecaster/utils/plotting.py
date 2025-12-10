@@ -810,8 +810,8 @@ def plot_event_magnitude_analysis(
         List of average RMSE values for water depth.
     out_dir : str
         Output directory for plots.
-    """
 
+    The function creates two plots:
     1. Overall RMSE vs. Peak Inflow (Q_peak)
     2. Overall RMSE vs. Total Inflow Volume
     """

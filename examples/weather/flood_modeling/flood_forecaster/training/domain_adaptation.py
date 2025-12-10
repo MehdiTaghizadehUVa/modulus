@@ -47,6 +47,8 @@ from neuralop.training import AdamW
 from neuralop.losses import LpLoss
 from neuralop.training.training_state import save_training_state, load_training_state
 
+from data_processing import LpLossWrapper
+
 # Try to import comm for distributed training, fallback if not available
 try:
     import neuralop.mpu.comm as comm
@@ -1018,8 +1020,8 @@ def adapt_model(
     logger.info(f"Optimizer: AdamW (lr={adapt_lr}, weight_decay={weight_decay})")
     scheduler_adapt = create_scheduler(optimizer_adapt, config, logger)
 
-    # Create loss
-    l2loss = LpLoss(d=2, p=2)
+    # Create loss - wrap with LpLossWrapper to filter out unexpected kwargs
+    l2loss = LpLossWrapper(LpLoss(d=2, p=2))
 
     # Create custom domain adaptation trainer
     trainer_adapt = DomainAdaptationTrainer(

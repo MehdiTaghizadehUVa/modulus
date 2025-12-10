@@ -17,10 +17,11 @@
 r"""
 Training script for FloodForecaster using GINO with domain adaptation.
 
-This script implements a three-stage training pipeline:
+This script implements a two-stage training pipeline:
 1. Pretraining on source domain
 2. Domain adaptation on source + target domains
-3. Rollout evaluation and metric computation
+
+For rollout evaluation and visualization, use inference.py instead.
 """
 
 import os
@@ -43,18 +44,14 @@ from physicsnemo.launch.logging.wandb import initialize_wandb
 
 from datasets import (
     FloodDatasetWithQueryPoints,
-    FloodRolloutTestDatasetNew,
     NormalizedDataset,
-    NormalizedRolloutTestDataset,
 )
 from data_processing import FloodGINODataProcessor
 from training.pretraining import pretrain_model
 from training.domain_adaptation import adapt_model
-from inference.rollout import rollout_prediction
 from utils.normalization import (
     collect_all_fields,
     stack_and_fit_transform,
-    transform_with_existing_normalizers,
 )
 
 
@@ -70,13 +67,15 @@ def log_section(logger: RankZeroLoggingWrapper, title: str, char: str = "=", wid
 @hydra.main(version_base="1.3", config_path="conf", config_name="config")
 def train_flood_forecaster(cfg: DictConfig) -> None:
     r"""
-    Main training and evaluation pipeline for FloodForecaster.
+    Main training pipeline for FloodForecaster.
 
-    This function orchestrates the complete training and evaluation workflow:
+    This function orchestrates the complete training workflow:
     1. Configuration loading and device setup
     2. Pretraining on source domain
     3. Domain adaptation on source + target domains
-    4. Rollout evaluation and metric computation
+
+    After training completes, use inference.py to perform rollout evaluation
+    and generate visualizations.
 
     Parameters
     ----------
@@ -130,7 +129,20 @@ def train_flood_forecaster(cfg: DictConfig) -> None:
             and cfg.source_data.resolution < cfg.model.fno_n_modes[0]
         ):
             cfg.model.fno_n_modes = [cfg.source_data.resolution] * len(cfg.model.fno_n_modes)
-            log_rank_zero.debug(f"Adjusted FNO modes to: {cfg.model.fno_n_modes}")
+            # Safely log debug message - PythonLogger doesn't have debug method
+            try:
+                # Check if logger has a 'logger' attribute (underlying logging.Logger)
+                # RankZeroLoggingWrapper wraps PythonLogger which has a 'logger' attribute
+                if hasattr(log_rank_zero, 'obj') and hasattr(log_rank_zero.obj, 'logger'):
+                    log_rank_zero.obj.logger.debug(f"Adjusted FNO modes to: {cfg.model.fno_n_modes}")
+                elif hasattr(log_rank_zero, 'logger') and hasattr(log_rank_zero.logger, 'debug'):
+                    log_rank_zero.logger.debug(f"Adjusted FNO modes to: {cfg.model.fno_n_modes}")
+                # Fallback: try direct debug method (for loggers that support it)
+                elif hasattr(log_rank_zero, 'debug'):
+                    log_rank_zero.debug(f"Adjusted FNO modes to: {cfg.model.fno_n_modes}")
+            except (AttributeError, TypeError):
+                # Skip debug logging if not available (not critical)
+                pass
 
         # Initialize wandb if logging is enabled
         if cfg.wandb.log and is_logger:
@@ -254,76 +266,15 @@ def train_flood_forecaster(cfg: DictConfig) -> None:
             logger=log_rank_zero,
         )
 
-        # Stage 3: Rollout evaluation
-        log_section(log_rank_zero, "Stage 3: Rollout Evaluation")
-        log_rank_zero.info("Loading rollout test dataset...")
-        rollout_test_dataset = FloodRolloutTestDatasetNew(
-            rollout_data_root=cfg.rollout_data.root,
-            n_history=cfg.source_data.n_history,  # Use source_data for n_history
-            rollout_length=cfg.source_data.rollout_length,
-            xy_file=cfg.rollout_data.get("xy_file", None),
-            query_res=cfg.source_data.get("query_res", [32, 32]),
-            static_files=cfg.rollout_data.get("static_files", []),
-            dynamic_patterns=cfg.rollout_data.get("dynamic_patterns", {}),
-            boundary_patterns=cfg.rollout_data.get("boundary_patterns", {}),
-            raise_on_smaller=True,
-            skip_before_timestep=cfg.source_data.get("skip_before_timestep", 0),
-        )
-        log_rank_zero.info(f"Loaded {len(rollout_test_dataset)} rollout test samples")
-
-        # Pass the raw cell area data along with other fields
-        (
-            rollout_geom,
-            rollout_static,
-            rollout_boundary,
-            rollout_dyn,
-            _,
-            rollout_cell_area,
-        ) = collect_all_fields(rollout_test_dataset, expect_target=False)
-
-        # Move normalizers to CPU for data transformation
-        for norm in normalizers.values():
-            norm.to("cpu")
-
-        transformed_rollout = transform_with_existing_normalizers(
-            rollout_geom, rollout_static, rollout_boundary, rollout_dyn, normalizers
-        )
-
-        normalized_rollout_samples = [
-            {
-                "run_id": rollout_test_dataset.valid_run_ids[i],
-                "geometry": transformed_rollout["geometry"][i],
-                "static": transformed_rollout["static"][i],
-                "boundary": transformed_rollout["boundary"][i],
-                "dynamic": transformed_rollout["dynamic"][i],
-                "cell_area": rollout_cell_area[i],
-            }
-            for i in range(len(rollout_test_dataset))
-        ]
-
-        log_rank_zero.info("Starting rollout prediction...")
-        rollout_prediction(
-            model=trainer_adapt.model,
-            rollout_dataset=NormalizedRolloutTestDataset(
-                normalized_rollout_samples, cfg.source_data.query_res
-            ),
-            rollout_length=cfg.source_data.rollout_length,
-            history_steps=cfg.source_data.n_history,
-            dynamic_norm=normalizers["dynamic"],
-            target_norm=normalizers["target"],
-            boundary_norm=normalizers["boundary"],
-            device=device,
-            skip_before_timestep=cfg.source_data.get("skip_before_timestep", 0),
-            dt=cfg.source_data.dt,
-            out_dir=cfg.rollout.out_dir,
-            logger=log_rank_zero,
-        )
-
         if cfg.wandb.log and is_logger:
             wandb.finish()
             log_rank_zero.info("W&B logging finished")
 
-        log_section(log_rank_zero, "Training and Evaluation Complete!")
+        log_section(log_rank_zero, "Training Complete!")
+        log_rank_zero.info("")
+        log_rank_zero.info("To perform rollout evaluation and generate visualizations,")
+        log_rank_zero.info("run: python inference.py --config-path conf --config-name config")
+        log_rank_zero.info("")
 
     except KeyboardInterrupt:
         log_rank_zero.warning("Training interrupted by user")
@@ -331,7 +282,9 @@ def train_flood_forecaster(cfg: DictConfig) -> None:
             wandb.finish()
         sys.exit(1)
     except Exception as e:
-        log_rank_zero.error(f"Fatal error in main pipeline: {e}", exc_info=True)
+        import traceback
+        log_rank_zero.error(f"Fatal error in main pipeline: {e}")
+        log_rank_zero.error(traceback.format_exc())
         if config is not None and hasattr(config, "wandb") and config.wandb.log:
             wandb.finish()
         raise

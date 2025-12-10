@@ -249,7 +249,9 @@ def run_inference(cfg: DictConfig) -> None:
         log_rank_zero.warning("Inference interrupted by user")
         sys.exit(1)
     except Exception as e:
-        log_rank_zero.error(f"Fatal error in inference pipeline: {e}", exc_info=True)
+        import traceback
+        log_rank_zero.error(f"Fatal error in inference pipeline: {e}")
+        log_rank_zero.error(traceback.format_exc())
         raise
 
 
