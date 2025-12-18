@@ -35,12 +35,12 @@ except:
 
 from physicsnemo.datapipes.gnn.stokes_dataset import StokesDataset
 from physicsnemo.distributed.manager import DistributedManager
-from physicsnemo.launch.logging import (
+from physicsnemo.utils.logging import (
     PythonLogger,
     RankZeroLoggingWrapper,
 )
-from physicsnemo.launch.logging.wandb import initialize_wandb
-from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
+from physicsnemo.utils.logging.wandb import initialize_wandb
+from physicsnemo.utils import load_checkpoint, save_checkpoint
 from physicsnemo.models.meshgraphnet import MeshGraphNet
 
 from utils import relative_lp_error

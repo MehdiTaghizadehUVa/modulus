@@ -14,19 +14,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ruff: noqa: E402
-import os
-import sys
 
-script_path = os.path.abspath(__file__)
-sys.path.append(os.path.join(os.path.dirname(script_path), ".."))
-
-import common
 import pytest
 import torch
-from graphcast.utils import fix_random_seeds
-from pytest_utils import import_or_fail
 
 from physicsnemo.models.dlwp_healpix import HEALPixRecUNet
+from test import common
+from test.conftest import requires_module
+from test.models.graphcast.utils import fix_random_seeds
 
 omegaconf = pytest.importorskip("omegaconf")
 
@@ -34,7 +29,7 @@ omegaconf = pytest.importorskip("omegaconf")
 @pytest.fixture
 def conv_next_block_dict(in_channels=3, out_channels=1):
     activation_block = {
-        "_target_": "physicsnemo.models.layers.activations.CappedGELU",
+        "_target_": "physicsnemo.nn.activations.CappedGELU",
         "cap_value": 10,
     }
     conv_block = {
@@ -77,7 +72,7 @@ def encoder_dict(conv_next_block_dict, down_sampling_block_dict, recurrent_block
 def up_sampling_block_dict(in_channels=3, out_channels=1):
     """Block dict fixture."""
     activation_block = {
-        "_target_": "physicsnemo.models.layers.activations.CappedGELU",
+        "_target_": "physicsnemo.nn.activations.CappedGELU",
         "cap_value": 10,
     }
     up_sampling_block = {
@@ -169,8 +164,7 @@ def insolation_data():
     return generate_insolation_data
 
 
-@import_or_fail("omegaconf")
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@requires_module("omegaconf")
 def test_HEALPixRecUNet_initialize(device, encoder_dict, decoder_dict, pytestconfig):
     in_channels = 3
     out_channels = 3
@@ -274,8 +268,7 @@ def test_HEALPixRecUNet_initialize(device, encoder_dict, decoder_dict, pytestcon
     torch.cuda.empty_cache()
 
 
-@import_or_fail("omegaconf")
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@requires_module("omegaconf")
 def test_HEALPixRecUNet_integration_steps(
     device, encoder_dict, decoder_dict, pytestconfig
 ):
@@ -302,8 +295,7 @@ def test_HEALPixRecUNet_integration_steps(
     torch.cuda.empty_cache()
 
 
-@import_or_fail("omegaconf")
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@requires_module("omegaconf")
 @torch.no_grad()
 def test_HEALPixRecUNet_reset(
     device,
@@ -355,8 +347,7 @@ def test_HEALPixRecUNet_reset(
     torch.cuda.empty_cache()
 
 
-@import_or_fail("omegaconf")
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@requires_module("omegaconf")
 @torch.no_grad()
 def test_HEALPixRecUNet_forward(
     device,
@@ -417,7 +408,7 @@ def test_HEALPixRecUNet_forward(
     assert common.validate_forward_accuracy(
         model,
         (inputs,),
-        file_name="dlwp_healpix.pth",
+        file_name="models/dlwp_healpix/data/dlwp_healpix.pth",
         rtol=1e-2,
     )
 
@@ -446,7 +437,7 @@ def test_HEALPixRecUNet_forward(
     assert common.validate_forward_accuracy(
         model,
         (inputs,),
-        file_name="dlwp_healpix_const.pth",
+        file_name="models/dlwp_healpix/data/dlwp_healpix_const.pth",
         rtol=1e-2,
     )
 
@@ -471,7 +462,7 @@ def test_HEALPixRecUNet_forward(
     assert common.validate_forward_accuracy(
         model,
         (inputs,),
-        file_name="dlwp_healpix_decoder.pth",
+        file_name="models/dlwp_healpix/data/dlwp_healpix_decoder.pth",
         rtol=1e-2,
     )
 

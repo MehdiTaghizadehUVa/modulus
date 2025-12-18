@@ -20,14 +20,13 @@ import torch.nn as nn
 
 from physicsnemo.models.diffusion import PositionalEmbedding, Linear
 from dataclasses import dataclass
-from physicsnemo.models.meta import ModelMetaData
-from physicsnemo.models.module import Module
+from physicsnemo.core.meta import ModelMetaData
+from physicsnemo.core.module import Module
 from physicsnemo.experimental.models.dit import DiTBlock
 from physicsnemo.experimental.models.dit.layers import get_tokenizer, get_detokenizer, TokenizerModuleBase, DetokenizerModuleBase
 
 @dataclass
 class MetaData(ModelMetaData):
-    name: str = "DiT"
     # Optimization
     jit: bool = False
     cuda_graphs: bool = False
@@ -208,7 +207,7 @@ class DiT(Module):
             )
         else:
             if not isinstance(tokenizer, TokenizerModuleBase):
-                raise TypeError("tokenizer must be a string or a physicsnemo.models.Module instance subclassing physicsnemo.experimental.models.dit.layers.TokenizerModuleBase")
+                raise TypeError("tokenizer must be a string or a physicsnemo.core.Module instance subclassing physicsnemo.experimental.models.dit.layers.TokenizerModuleBase")
             self.tokenizer = tokenizer
 
         self.t_embedder = PositionalEmbedding(hidden_size, amp_mode=self.meta.amp_gpu, learnable=True, **timestep_embed_kwargs)
@@ -239,7 +238,7 @@ class DiT(Module):
             )
         else:
             if not isinstance(detokenizer, DetokenizerModuleBase):
-                raise TypeError("detokenizer must be a string or a physicsnemo.models.Module instance subclassing physicsnemo.experimental.models.dit.layers.DetokenizerModuleBase")
+                raise TypeError("detokenizer must be a string or a physicsnemo.core.Module instance subclassing physicsnemo.experimental.models.dit.layers.DetokenizerModuleBase")
             self.detokenizer = detokenizer
 
 

@@ -26,6 +26,9 @@ import torch
 import torch.nn as nn
 from torch.nn.functional import silu
 
+from physicsnemo.core.meta import ModelMetaData
+from physicsnemo.core.module import Module
+
 from ..diffusion import (
     Conv2d,
     GroupNorm,
@@ -33,13 +36,10 @@ from ..diffusion import (
     PositionalEmbedding,
     UNetBlock,
 )
-from ..meta import ModelMetaData
-from ..module import Module
 
 
 @dataclass
 class MetaData(ModelMetaData):
-    name: str = "TopoDiff"
     # Optimization
     jit: bool = False
     cuda_graphs: bool = False

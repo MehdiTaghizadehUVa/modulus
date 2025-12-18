@@ -23,7 +23,7 @@ import zipfile
 import numpy as np
 import PIL.Image
 import torch
-from physicsnemo.utils.diffusion import EasyDict
+from physicsnemo.models.diffusion.training_utils import EasyDict
 
 try:
     import pyspng

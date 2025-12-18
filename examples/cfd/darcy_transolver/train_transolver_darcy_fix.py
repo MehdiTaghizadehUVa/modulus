@@ -41,8 +41,8 @@ from utils.testloss import TestLoss
 from physicsnemo.models.transolver import Transolver
 from physicsnemo.distributed import DistributedManager
 
-from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
-from physicsnemo.launch.logging import PythonLogger, RankZeroLoggingWrapper
+from physicsnemo.utils import load_checkpoint, save_checkpoint
+from physicsnemo.utils.logging import PythonLogger, RankZeroLoggingWrapper
 
 from darcy_datapipe_fix import Darcy2D_fix
 from validator_fix import GridValidator

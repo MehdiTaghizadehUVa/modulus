@@ -21,14 +21,13 @@ import numpy as np
 import torch
 
 from physicsnemo.models.diffusion.preconditioning import EDMPrecondSuperResolution
-from physicsnemo.models.meta import ModelMetaData
+from physicsnemo.core.meta import ModelMetaData
 
 
 @dataclass
 class tEDMPrecondSuperResMetaData(ModelMetaData):
     """tEDMPrecondSuperRes meta data"""
 
-    name: str = "tEDMPrecondSuperRes"
     # Optimization
     jit: bool = False
     cuda_graphs: bool = False

@@ -26,8 +26,8 @@ from physicsnemo.models.mlp import FullyConnected
 from physicsnemo.models.fno import FNO
 from physicsnemo.utils import StaticCaptureEvaluateNoGrad
 from physicsnemo.distributed import DistributedManager
-from physicsnemo.launch.logging import PythonLogger
-from physicsnemo.launch.utils import load_checkpoint
+from physicsnemo.utils.logging import PythonLogger
+from physicsnemo.utils import load_checkpoint
 
 from utils import NestedDarcyDataset, PlotNestedDarcy
 

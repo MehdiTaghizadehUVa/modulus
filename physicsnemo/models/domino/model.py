@@ -24,8 +24,8 @@ the config.yaml file)
 import torch
 import torch.nn as nn
 
-from physicsnemo.models.layers import FourierMLP, get_activation
 from physicsnemo.models.unet import UNet
+from physicsnemo.nn import FourierMLP, get_activation
 
 from .encodings import (
     MultiGeometryEncoding,

@@ -22,7 +22,7 @@ The main feature here is we've locked in the number of layers.
 
 import torch.nn as nn
 
-from physicsnemo.models.layers import Mlp
+from physicsnemo.nn import Mlp
 
 
 class AggregationModel(Mlp):

@@ -16,7 +16,7 @@
 
 import torch
 
-from physicsnemo.distributed.shard_tensor import ShardTensor
+from physicsnemo.domain_parallel.shard_tensor import ShardTensor
 from physicsnemo.utils.profiling import profile
 
 

@@ -26,8 +26,8 @@ from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
 from physicsnemo.models.dpot.dpot import DPOTNet
 from typing import Union
-from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
-from physicsnemo.launch.logging import PythonLogger, LaunchLogger
+from physicsnemo.utils import load_checkpoint, save_checkpoint
+from physicsnemo.utils.logging import PythonLogger, LaunchLogger
 from hydra.utils import to_absolute_path
 
 

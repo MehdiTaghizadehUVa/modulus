@@ -26,8 +26,8 @@ from torch.utils.data import DataLoader
 import torch.nn.functional as F
 
 from physicsnemo.models.fno import FNO
-from physicsnemo.launch.logging import LaunchLogger
-from physicsnemo.launch.utils.checkpoint import save_checkpoint
+from physicsnemo.utils.logging import LaunchLogger
+from physicsnemo.utils.checkpoint import save_checkpoint
 
 from train_utils.datasets import DataLoader2D_swe
 from swe_nl_pde import SWE_NL

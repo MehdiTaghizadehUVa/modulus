@@ -19,10 +19,11 @@ import torch.distributed as dist
 from torch.overrides import handle_torch_function, has_torch_function
 import time
 
-from physicsnemo.distributed import DistributedManager, scatter_tensor, ShardTensor
-from torch.distributed.tensor.placement_types import Shard, Replicate
+from physicsnemo.distributed import DistributedManager
+from physicsnemo.domain_parallel import scatter_tensor, ShardTensor
+from torch.distributed.tensor.placement_types import Shard
 
-from physicsnemo.distributed.shard_utils.ring import (
+from physicsnemo.domain_parallel.shard_utils.ring import (
     perform_ring_iteration,
     RingPassingConfig,
 )

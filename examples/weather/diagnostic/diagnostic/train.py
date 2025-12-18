@@ -27,8 +27,8 @@ except ImportError:
 
 from physicsnemo import Module
 from physicsnemo.distributed import DistributedManager
-from physicsnemo.launch.logging import LaunchLogger, PythonLogger
-from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
+from physicsnemo.utils.logging import LaunchLogger, PythonLogger
+from physicsnemo.utils import load_checkpoint, save_checkpoint
 from physicsnemo.utils import StaticCaptureTraining, StaticCaptureEvaluateNoGrad
 
 

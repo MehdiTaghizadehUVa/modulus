@@ -26,8 +26,8 @@ from einops import rearrange
 from timm.layers import Mlp
 
 from physicsnemo.models.diffusion.song_unet import SongUNetPosEmbd
-from physicsnemo.models.meta import ModelMetaData
-from physicsnemo.models.module import Module
+from physicsnemo.core.meta import ModelMetaData
+from physicsnemo.core.module import Module
 
 
 class AttentionPool(nn.Module):
@@ -275,7 +275,6 @@ class DiffusionFWINetMetaData(ModelMetaData):
     Metadata for the DiffusionFWINet model.
     """
 
-    name: str = "DiffusionFWINet"
     # Optimization
     jit: bool = False
     cuda_graphs: bool = False

@@ -16,8 +16,8 @@
 
 import pytest
 import torch
-from pytest_utils import import_or_fail
 
+from physicsnemo.core.module import Module
 from physicsnemo.models.diffusion.preconditioning import (
     EDMPrecond,
     EDMPrecondSR,
@@ -25,7 +25,7 @@ from physicsnemo.models.diffusion.preconditioning import (
     VEPrecond_dfsr,
     VEPrecond_dfsr_cond,
 )
-from physicsnemo.models.module import Module
+from test.conftest import requires_module
 
 
 def test_EDMPrecondSuperResolution_forward():
@@ -103,9 +103,9 @@ def test_EDMPrecondSuperResolution_fp16_forward():
     )
 
 
-@import_or_fail("termcolor")
+@requires_module("termcolor")
 def test_EDMPrecondSuperResolution_serialization(tmp_path, pytestconfig):
-    from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
+    from physicsnemo.utils.checkpoint import load_checkpoint, save_checkpoint
 
     module = EDMPrecondSuperResolution(8, 1, 1)
     model_path = tmp_path / "output.mdlus"
@@ -307,9 +307,9 @@ def test_EDMPrecondSR_forward():
     assert output.shape == (b, c_target, x, y)
 
 
-@import_or_fail("termcolor")
+@requires_module("termcolor")
 def test_EDMPrecondSR_serialization(tmp_path, pytestconfig):
-    from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
+    from physicsnemo.utils.checkpoint import load_checkpoint, save_checkpoint
 
     module = EDMPrecondSR(
         8, 1, 1, 1

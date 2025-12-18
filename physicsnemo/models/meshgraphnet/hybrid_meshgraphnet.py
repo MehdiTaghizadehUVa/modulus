@@ -14,47 +14,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import warnings
 from dataclasses import dataclass
+from itertools import chain
 from typing import Callable, List, Tuple, Union
 
 import torch.nn as nn
 from torch import Tensor
 
-try:
-    import dgl  # noqa: F401 for docs
-
-    warnings.warn(
-        "DGL version of MeshGraphNet will soon be deprecated. "
-        "Please use PyG version instead.",
-        DeprecationWarning,
-    )
-except ImportError:
-    warnings.warn(
-        "Note: This only applies if you're using DGL.\n"
-        "MeshGraphNet (DGL version) requires the DGL library.\n"
-        "Install it with your preferred CUDA version from:\n"
-        "https://www.dgl.ai/pages/start.html\n"
-    )
-
-try:
-    import torch_scatter  # noqa: F401
-except ImportError:
-    warnings.warn(
-        "MeshGraphNet will soon require PyTorch Geometric and torch_scatter.\n"
-        "Install it from here:\n"
-        "https://github.com/rusty1s/pytorch_scatter\n"
-    )
-
-from itertools import chain
-
 import physicsnemo  # noqa: F401 for docs
-from physicsnemo.models.gnn_layers.mesh_edge_block import HybridMeshEdgeBlock
-from physicsnemo.models.gnn_layers.mesh_graph_mlp import MeshGraphMLP
-from physicsnemo.models.gnn_layers.mesh_node_block import HybridMeshNodeBlock
-from physicsnemo.models.gnn_layers.utils import GraphType
-from physicsnemo.models.layers import get_activation
-from physicsnemo.models.meta import ModelMetaData
+from physicsnemo.core.meta import ModelMetaData
+from physicsnemo.nn import get_activation
+from physicsnemo.nn.gnn_layers.mesh_edge_block import HybridMeshEdgeBlock
+from physicsnemo.nn.gnn_layers.mesh_graph_mlp import MeshGraphMLP
+from physicsnemo.nn.gnn_layers.mesh_node_block import HybridMeshNodeBlock
+from physicsnemo.nn.gnn_layers.utils import GraphType
 from physicsnemo.utils.profiling import profile
 
 # Import the MeshGraphNet
@@ -65,7 +38,6 @@ from .meshgraphnet import MeshGraphNet, MeshGraphNetProcessor
 class HybridMetaData(ModelMetaData):
     """Metadata for HybridMeshGraphNet"""
 
-    name: str = "HybridMeshGraphNet"
     # Optimization, no JIT as DGLGraph causes trouble
     jit: bool = False
     cuda_graphs: bool = False

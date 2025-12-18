@@ -29,7 +29,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 from dataset import ProcessedVTPDataset
 from model import MoEGatingNet
 from physicsnemo.distributed import DistributedManager
-from physicsnemo.launch.utils import load_checkpoint
+from physicsnemo.utils import load_checkpoint
 
 # Configure logging
 logging.basicConfig(

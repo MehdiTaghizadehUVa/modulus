@@ -18,36 +18,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
+import importlib
 import random
+import warnings
+from dataclasses import dataclass
 
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.nn import Embedding, Linear, ReLU
-
-try:
-    from torch_scatter import scatter
-except ImportError:
-    raise ImportError(
-        "VFGN pipeline requires the PyTorch_Geometric library. Install the "
-        + "package at: https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html"
-    )
-
-from dataclasses import dataclass
-
 from torch import Tensor
+from torch.nn import Embedding, Linear, ReLU
 from torch.utils.checkpoint import checkpoint
 
-from ..meta import ModelMetaData
-from ..module import Module
+from physicsnemo.core import Module
+from physicsnemo.core.meta import ModelMetaData
+from physicsnemo.core.version_check import check_version_spec
+
+TORCH_SCATTER_AVAILABLE = check_version_spec("torch_scatter", hard_fail=False)
 
 STD_EPSILON = 1e-8
 
 
 @dataclass
 class MetaData(ModelMetaData):
-    name: str = "VFGN"
+    name: str = "VFGNLearnedSimulator"
     # Optimization
     jit: bool = False
     cuda_graphs: bool = True
@@ -252,92 +246,110 @@ class EdgeBlock(Module):
         return node_attr, updated_edges, receivers, senders
 
 
-class NodeBlock(Module):
-    """
-    Update the nodes attributes by collecting the sender and/or receiver-nodes'
-    edge attributes, pass through the node-MLP network.
+if TORCH_SCATTER_AVAILABLE:
+    scatter = importlib.import_module("torch_scatter").scatter
 
-    Parameters
-    ----------
-    mlp_hidden_size : int
-        Number of channels/ features in the hidden layers
-    mlp_num_hidden_layers : int
-        Number of hidden layers
-    latent_size : int
-        Number of latent channels
-    aggr : str, optional, default = "add"
-        operation to collect the node attributes
-    use_receiver_nodes : bool, optional, default = True
-        whether to take the receiver-node's edges atrributes into compute
-    use_sender_nodes : bool, optional, default = True
-        whether to take the sender-node's edges atrributes into compute
+    class NodeBlock(Module):
+        """
+        Update the nodes attributes by collecting the sender and/or receiver-nodes'
+        edge attributes, pass through the node-MLP network.
 
-    # Example
-    # -------
-    # >>> #2D convolutional encoder decoder
-    # >>> model = physicsnemo.models.graph_network.NodeBlock(
-    # ... mlp_hidden_size=128,
-    # ... mlp_num_hidden_layers=2,
-    # ... latent_size=128,
-    # ... node_dim=0)
-    # >>> input = (node_attr, edge_attr, receiver_list, sender_list)
-    # >>> output = updated_node_attr, edge_attr, receiver_list, sender_list
-    # >>> output.size()
+        Parameters
+        ----------
+        mlp_hidden_size : int
+            Number of channels/ features in the hidden layers
+        mlp_num_hidden_layers : int
+            Number of hidden layers
+        latent_size : int
+            Number of latent channels
+        aggr : str, optional, default = "add"
+            operation to collect the node attributes
+        use_receiver_nodes : bool, optional, default = True
+            whether to take the receiver-node's edges atrributes into compute
+        use_sender_nodes : bool, optional, default = True
+            whether to take the sender-node's edges atrributes into compute
 
-    """
+        # Example
+        # -------
+        # >>> #2D convolutional encoder decoder
+        # >>> model = physicsnemo.models.graph_network.NodeBlock(
+        # ... mlp_hidden_size=128,
+        # ... mlp_num_hidden_layers=2,
+        # ... latent_size=128,
+        # ... node_dim=0)
+        # >>> input = (node_attr, edge_attr, receiver_list, sender_list)
+        # >>> output = updated_node_attr, edge_attr, receiver_list, sender_list
+        # >>> output.size()
 
-    def __init__(
-        self,
-        mlp_hidden_size,
-        mlp_num_hidden_layers,
-        latent_size,
-        aggr="add",
-        node_dim=0,
-        use_received_edges=True,
-        use_sent_edges=False,
-    ):
-        super().__init__(meta=MetaData(name="vfgn_nodeblock"))
-        self.aggr = aggr
-        self.node_dim = node_dim
+        """
 
-        self.use_received_edges = use_received_edges
-        self.use_sent_edges = use_sent_edges
+        def __init__(
+            self,
+            mlp_hidden_size,
+            mlp_num_hidden_layers,
+            latent_size,
+            aggr="add",
+            node_dim=0,
+            use_received_edges=True,
+            use_sent_edges=False,
+        ):
+            super().__init__(meta=MetaData(name="vfgn_nodeblock"))
+            self.aggr = aggr
+            self.node_dim = node_dim
 
-        self._node_model = MLPNet(mlp_hidden_size, mlp_num_hidden_layers, latent_size)
+            self.use_received_edges = use_received_edges
+            self.use_sent_edges = use_sent_edges
 
-    def forward(self, x, edge_attr, receivers, senders):
-        nodes_to_collect = []
-        nodes_to_collect.append(x)
-
-        dim_size = x.shape[self.node_dim]
-
-        # aggregate received edges
-        if self.use_received_edges:
-            receivers_edge = scatter(
-                dim=self.node_dim,
-                dim_size=dim_size,
-                index=receivers,
-                src=edge_attr,
-                reduce=self.aggr,
+            self._node_model = MLPNet(
+                mlp_hidden_size, mlp_num_hidden_layers, latent_size
             )
-            nodes_to_collect.append(receivers_edge)
 
-        # aggregate sent edges
-        if self.use_sent_edges:
-            senders_edge = scatter(
-                dim=self.node_dim,
-                dim_size=dim_size,
-                index=senders,
-                src=edge_attr,
-                reduce=self.aggr,
+        def forward(self, x, edge_attr, receivers, senders):
+            nodes_to_collect = []
+            nodes_to_collect.append(x)
+
+            dim_size = x.shape[self.node_dim]
+
+            # aggregate received edges
+            if self.use_received_edges:
+                receivers_edge = scatter(
+                    dim=self.node_dim,
+                    dim_size=dim_size,
+                    index=receivers,
+                    src=edge_attr,
+                    reduce=self.aggr,
+                )
+                nodes_to_collect.append(receivers_edge)
+
+            # aggregate sent edges
+            if self.use_sent_edges:
+                senders_edge = scatter(
+                    dim=self.node_dim,
+                    dim_size=dim_size,
+                    index=senders,
+                    src=edge_attr,
+                    reduce=self.aggr,
+                )
+                nodes_to_collect.append(senders_edge)
+
+            collected_nodes = torch.cat(nodes_to_collect, axis=-1)
+
+            updated_nodes = self._node_model(collected_nodes)
+
+            return updated_nodes, edge_attr, receivers, senders
+
+else:
+
+    class NodeBlock(Module):
+        """
+        Dummy class for when torch_scatter is not available.
+        """
+
+        def __init__(self, *args, **kwargs):
+            raise ImportError(
+                "VFGN pipeline requires the PyTorch_Geometric library. Install the "
+                + "package at: https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html"
             )
-            nodes_to_collect.append(senders_edge)
-
-        collected_nodes = torch.cat(nodes_to_collect, axis=-1)
-
-        updated_nodes = self._node_model(collected_nodes)
-
-        return updated_nodes, edge_attr, receivers, senders
 
 
 class InteractionNet(torch.nn.Module):
@@ -578,7 +590,7 @@ class EncodeProcessDecode(Module):
         return x
 
 
-class LearnedSimulator(Module):
+class VFGNLearnedSimulator(Module):
     """
     Construct the Simulator model architecture
 
@@ -605,7 +617,7 @@ class LearnedSimulator(Module):
 
     Example
     -------
-    # >>> model = physicsnemo.models.graph_network.LearnedSimulator(
+    # >>> model = physicsnemo.models.graph_network.VFGNLearnedSimulator(
     # ... num_dimensions=3*5, # metadata['dim'] * PREDICT_LENGTH
     # ... num_seq=2,
     # ... boundaries=128)
@@ -629,7 +641,7 @@ class LearnedSimulator(Module):
         connectivity_param: float = 0.015,
     ):
         if not (num_dimensions >= 0 and num_seq >= 3):
-            raise ValueError("Invalid arch params - LearnedSimulator")
+            raise ValueError("Invalid arch params - VFGNLearnedSimulator")
         super().__init__(meta=MetaData(name="vfgn_simulator"))
 
         # network parameters
@@ -670,7 +682,7 @@ class LearnedSimulator(Module):
 
     def to(self, device):
         """Device transfer"""
-        new_self = super(LearnedSimulator, self).to(device)
+        new_self = super(VFGNLearnedSimulator, self).to(device)
         new_self._boundaries = self._boundaries.to(device)
         for key in self._normalization_stats:
             new_self._normalization_stats[key].to(device)
@@ -966,7 +978,7 @@ class LearnedSimulator(Module):
         particle_types=None,
     ) -> Tensor:
         """
-        Inference with the LearnedSimulator network
+        Inference with the VFGNLearnedSimulator network
 
         Args:
         position_sequence: Model inference input tensor
@@ -1024,7 +1036,7 @@ class LearnedSimulator(Module):
         particle_types=None,
     ) -> Tensor:
         """
-        Training step with the LearnedSimulator network,
+        Training step with the VFGNLearnedSimulator network,
         Produces normalized and predicted nodal acceleration.
 
         Args:
@@ -1113,3 +1125,63 @@ class LearnedSimulator(Module):
         ) / acceleration_stats.std
         normalized_acceleration = torch.tile(normalized_acceleration, [predict_length])
         return normalized_acceleration
+
+
+class LearnedSimulator(VFGNLearnedSimulator):
+    """
+    NOTE: This is a deprecated version of the VFGNLearnedSimulator model.
+    This is kept for backwards compatibility and to allow loading old models.
+    Please use the VFGNLearnedSimulator model instead.
+
+    Construct the Simulator model architecture
+
+    Parameters
+    ----------
+    num_dimensions : int
+        Number of dimensions to make the prediction
+    num_seq : int
+        Number of sintering steps
+    boundaries : list[list[float]]
+        boundary value that the object is placed/ normalized in,
+        i.e.[[-5.0, 5.0], [-5.0, 5.0], [-5.0, 5.0]]
+    num_particle_types : int
+        Number of types to differentiate the different nodes, i.e. fixed/ moving nodes
+    particle_type_embedding_size: int
+        positional embedding dimension with different particle types,
+        in torch.nn.Embedding()
+    normalization_stats: dict{list[float]}
+        Stored in metadata.json
+        {'acceleration': acceleration_stats, 'velocity': velocity_stats, 'context': context_stats}
+    graph_mode : str, optional
+    connectivity_param: float
+        Distance to normalize the displacement between nodes
+    """
+
+    def __init__(
+        self,
+        num_dimensions: int = 3,
+        num_seq: int = 5,
+        boundaries: list[list[float]] = None,
+        num_particle_types: int = 3,
+        particle_type_embedding_size: int = 16,
+        normalization_stats: map = None,
+        graph_mode: str = "radius",
+        connectivity_param: float = 0.015,
+    ):
+        warnings.warn(
+            "LearnedSimulator is deprecated and will be removed in a future version. "
+            "Please use VFGNLearnedSimulator instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+        super().__init__(
+            num_dimensions=num_dimensions,
+            num_seq=num_seq,
+            boundaries=boundaries,
+            num_particle_types=num_particle_types,
+            particle_type_embedding_size=particle_type_embedding_size,
+            normalization_stats=normalization_stats,
+            graph_mode=graph_mode,
+            connectivity_param=connectivity_param,
+        )

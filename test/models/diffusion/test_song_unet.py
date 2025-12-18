@@ -14,21 +14,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ruff: noqa: E402
-import os
-import sys
 
 import pytest
 import torch
 
-script_path = os.path.abspath(__file__)
-sys.path.append(os.path.join(os.path.dirname(script_path), ".."))
-
-import common
-
 from physicsnemo.models.diffusion import SongUNet as UNet
+from test import common
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_song_unet_forward(device):
     torch.manual_seed(0)
     # Construct the DDM++ UNet model
@@ -40,7 +33,7 @@ def test_song_unet_forward(device):
     assert common.validate_forward_accuracy(
         model,
         (input_image, noise_labels, class_labels),
-        file_name="ddmpp_unet_output.pth",
+        file_name="models/diffusion/data/ddmpp_unet_output.pth",
         atol=1e-3,
     )
 
@@ -59,12 +52,11 @@ def test_song_unet_forward(device):
     assert common.validate_forward_accuracy(
         model,
         (input_image, noise_labels, class_labels),
-        file_name="ncsnpp_unet_output.pth",
+        file_name="models/diffusion/data/ncsnpp_unet_output.pth",
         atol=1e-3,
     )
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_song_unet_constructor(device):
     """Test the Song UNet constructor options"""
 
@@ -172,7 +164,6 @@ def test_song_unet_constructor(device):
         pass
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_song_unet_optims(device):
     """Test Song UNet optimizations"""
 
@@ -232,7 +223,6 @@ def test_song_unet_optims(device):
         )
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_song_unet_checkpoint(device):
     """Test Song UNet checkpoint save/load"""
     # Construct FNO models
@@ -257,7 +247,6 @@ def test_song_unet_checkpoint(device):
 
 
 @common.check_ort_version()
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_song_unet_deploy(device):
     """Test Song UNet deployment support"""
     model = UNet(
@@ -282,7 +271,6 @@ def test_song_unet_deploy(device):
     )
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_song_unet_grad_checkpointing(device):
     channels = 2
     img_resolution = 64

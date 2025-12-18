@@ -33,9 +33,9 @@ from torch.utils.data.distributed import DistributedSampler
 
 from physicsnemo.datapipes.gnn.hydrographnet_dataset import HydroGraphDataset
 from physicsnemo.distributed.manager import DistributedManager
-from physicsnemo.launch.logging import PythonLogger, RankZeroLoggingWrapper
-from physicsnemo.launch.logging.wandb import initialize_wandb
-from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
+from physicsnemo.utils.logging import PythonLogger, RankZeroLoggingWrapper
+from physicsnemo.utils.logging.wandb import initialize_wandb
+from physicsnemo.utils import load_checkpoint, save_checkpoint
 from physicsnemo.models.meshgraphnet.meshgraphkan import MeshGraphKAN
 from utils import compute_physics_loss
 

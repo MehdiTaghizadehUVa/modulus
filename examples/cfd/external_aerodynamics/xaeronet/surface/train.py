@@ -43,7 +43,7 @@ from torch.utils.tensorboard import SummaryWriter
 from omegaconf import DictConfig
 
 from physicsnemo.distributed import DistributedManager
-from physicsnemo.launch.logging.wandb import initialize_wandb
+from physicsnemo.utils.logging.wandb import initialize_wandb
 from physicsnemo.models.meshgraphnet import MeshGraphNet
 
 # Get the absolute path to the parent directory

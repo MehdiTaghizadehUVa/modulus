@@ -29,8 +29,8 @@ from physicsnemo.models.rnn.rnn_seq2seq import Seq2SeqRNN
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from typing import Union
-from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
-from physicsnemo.launch.logging import PythonLogger, LaunchLogger
+from physicsnemo.utils import load_checkpoint, save_checkpoint
+from physicsnemo.utils.logging import PythonLogger, LaunchLogger
 from hydra.utils import to_absolute_path
 
 

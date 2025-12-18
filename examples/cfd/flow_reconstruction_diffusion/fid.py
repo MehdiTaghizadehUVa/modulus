@@ -31,7 +31,7 @@ from misc import open_url
 
 from physicsnemo.metrics.diffusion import calculate_fid_from_inception_stats
 from physicsnemo.distributed import DistributedManager
-from physicsnemo.launch.logging import PythonLogger, RankZeroLoggingWrapper
+from physicsnemo.utils.logging import PythonLogger, RankZeroLoggingWrapper
 
 
 def calculate_inception_stats(

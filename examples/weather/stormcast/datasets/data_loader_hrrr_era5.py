@@ -18,7 +18,7 @@ import os
 import glob
 import torch
 import numpy as np
-from physicsnemo.launch.logging import PythonLogger, RankZeroLoggingWrapper
+from physicsnemo.utils.logging import PythonLogger, RankZeroLoggingWrapper
 from physicsnemo.distributed import DistributedManager
 from datetime import datetime, timedelta
 import dask

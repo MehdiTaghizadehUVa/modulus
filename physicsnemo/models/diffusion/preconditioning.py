@@ -27,9 +27,9 @@ from typing import Any, List, Literal, Tuple, Union
 import numpy as np
 import torch
 
+from physicsnemo.core.meta import ModelMetaData
+from physicsnemo.core.module import Module
 from physicsnemo.models.diffusion.utils import _wrapped_property
-from physicsnemo.models.meta import ModelMetaData
-from physicsnemo.models.module import Module
 
 network_module = importlib.import_module("physicsnemo.models.diffusion")
 
@@ -38,7 +38,6 @@ network_module = importlib.import_module("physicsnemo.models.diffusion")
 class VPPrecondMetaData(ModelMetaData):
     """VPPrecond meta data"""
 
-    name: str = "VPPrecond"
     # Optimization
     jit: bool = False
     cuda_graphs: bool = False
@@ -221,7 +220,6 @@ class VPPrecond(Module):
 class VEPrecondMetaData(ModelMetaData):
     """VEPrecond meta data"""
 
-    name: str = "VEPrecond"
     # Optimization
     jit: bool = False
     cuda_graphs: bool = False
@@ -350,7 +348,6 @@ class VEPrecond(Module):
 class iDDPMPrecondMetaData(ModelMetaData):
     """iDDPMPrecond meta data"""
 
-    name: str = "iDDPMPrecond"
     # Optimization
     jit: bool = False
     cuda_graphs: bool = False
@@ -524,7 +521,6 @@ class iDDPMPrecond(Module):
 class EDMPrecondMetaData(ModelMetaData):
     """EDMPrecond meta data"""
 
-    name: str = "EDMPrecond"
     # Optimization
     jit: bool = False
     cuda_graphs: bool = False
@@ -693,7 +689,6 @@ class EDMPrecond(Module):
 class EDMPrecondSuperResolutionMetaData(ModelMetaData):
     """EDMPrecondSuperResolution meta data"""
 
-    name: str = "EDMPrecondSuperResolution"
     # Optimization
     jit: bool = False
     cuda_graphs: bool = False
@@ -1003,7 +998,6 @@ class EDMPrecondSuperResolution(Module):
 class EDMPrecondSRMetaData(ModelMetaData):
     """EDMPrecondSR meta data"""
 
-    name: str = "EDMPrecondSR"
     # Optimization
     jit: bool = False
     cuda_graphs: bool = False

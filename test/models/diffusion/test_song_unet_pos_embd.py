@@ -14,21 +14,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ruff: noqa: E402
-import os
-import sys
 
 import pytest
 import torch
 
-script_path = os.path.abspath(__file__)
-sys.path.append(os.path.join(os.path.dirname(script_path), ".."))
-
-import common
-
 from physicsnemo.models.diffusion import SongUNetPosEmbd as UNet
+from test import common
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_song_unet_forward(device):
     torch.manual_seed(0)
     N_pos = 4
@@ -41,7 +34,7 @@ def test_song_unet_forward(device):
     assert common.validate_forward_accuracy(
         model,
         (input_image, noise_labels, class_labels),
-        file_name="ddmpp_unet_output.pth",
+        file_name="models/diffusion/data/ddmpp_unet_output.pth",
         atol=1e-3,
     )
 
@@ -60,12 +53,11 @@ def test_song_unet_forward(device):
     assert common.validate_forward_accuracy(
         model,
         (input_image, noise_labels, class_labels),
-        file_name="ncsnpp_unet_output.pth",
+        file_name="models/diffusion/data/ncsnpp_unet_output.pth",
         atol=1e-3,
     )
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_song_unet_global_indexing(device):
     torch.manual_seed(0)
     N_pos = 2
@@ -97,7 +89,6 @@ def test_song_unet_global_indexing(device):
     assert torch.equal(pos_embed, global_index)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_song_unet_embedding_selector(device):
     torch.manual_seed(0)
     N_pos = 2
@@ -148,7 +139,6 @@ def test_song_unet_embedding_selector(device):
     assert torch.equal(selected_embeds, expected_embeds)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_song_unet_constructor(device):
     """Test the Song UNet constructor options"""
 
@@ -183,7 +173,6 @@ def test_song_unet_constructor(device):
     assert output_image.shape == (1, out_channels, img_resolution, img_resolution * 2)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_song_unet_position_embedding(device):
     # build unet
     img_resolution = 16
@@ -244,9 +233,11 @@ def test_fails_if_grid_is_invalid():
 
 
 # Skip CPU tests because too slow
-@pytest.mark.parametrize("device", ["cuda:0"])
 def test_song_unet_optims(device):
     """Test Song UNet optimizations"""
+
+    if device == "cpu":
+        pytest.skip("Skip SongUNetPosEmbd on cpu")
 
     def setup_model():
         model = UNet(
@@ -296,9 +287,12 @@ def test_song_unet_optims(device):
 
 
 # Skip CPU tests because too slow
-@pytest.mark.parametrize("device", ["cuda:0"])
 def test_song_unet_checkpoint(device):
     """Test Song UNet checkpoint save/load"""
+
+    if device == "cpu":
+        pytest.skip("Skip SongUNetPosEmbd on cpu")
+
     # Construct FNO models
     model_1 = UNet(
         img_resolution=16,
@@ -321,7 +315,6 @@ def test_song_unet_checkpoint(device):
 
 
 @common.check_ort_version()
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_son_unet_deploy(device):
     """Test Song UNet deployment support"""
     model = UNet(

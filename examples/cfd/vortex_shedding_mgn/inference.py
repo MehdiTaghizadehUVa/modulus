@@ -30,8 +30,8 @@ from torch_geometric.loader import DataLoader as PyGDataLoader
 
 from physicsnemo.models.meshgraphnet import MeshGraphNet
 from physicsnemo.datapipes.gnn.vortex_shedding_dataset import VortexSheddingDataset
-from physicsnemo.launch.logging import PythonLogger
-from physicsnemo.launch.utils import load_checkpoint
+from physicsnemo.utils.logging import PythonLogger
+from physicsnemo.utils import load_checkpoint
 
 
 class MGNRollout:

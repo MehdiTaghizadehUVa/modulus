@@ -27,12 +27,12 @@ from omegaconf import OmegaConf
 
 from physicsnemo.models.fno import FNO
 from physicsnemo.distributed import DistributedManager
-from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
-from physicsnemo.launch.logging import (
+from physicsnemo.utils import load_checkpoint, save_checkpoint
+from physicsnemo.utils.logging import (
     PythonLogger,
     LaunchLogger,
 )
-from physicsnemo.launch.logging.wandb import initialize_wandb
+from physicsnemo.utils.logging.wandb import initialize_wandb
 from physicsnemo.sym.hydra import to_absolute_path
 
 from losses import LossMHD, LossMHD_PhysicsNeMo

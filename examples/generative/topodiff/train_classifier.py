@@ -15,24 +15,19 @@
 # limitations under the License.
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LinearLR
-from tqdm import trange
 import numpy as np
-import time, os
 
 
 import hydra
-from hydra.utils import to_absolute_path
 from omegaconf import DictConfig
 
 from physicsnemo.models.topodiff import Diffusion
 from physicsnemo.models.topodiff import UNetEncoder
-from physicsnemo.launch.logging import PythonLogger
-from physicsnemo.launch.logging.wandb import initialize_wandb
-from utils import load_data_topodiff, load_data_classifier
+from physicsnemo.utils.logging import PythonLogger
+from utils import load_data_classifier
 
 
 @hydra.main(version_base="1.3", config_path="conf", config_name="config")

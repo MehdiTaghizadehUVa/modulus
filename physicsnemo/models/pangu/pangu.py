@@ -20,10 +20,10 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
-from ..layers import DownSample3D, FuserLayer, UpSample3D
-from ..meta import ModelMetaData
-from ..module import Module
-from ..utils import (
+from physicsnemo.core.meta import ModelMetaData
+from physicsnemo.core.module import Module
+from physicsnemo.nn import DownSample3D, FuserLayer, UpSample3D
+from physicsnemo.nn.utils import (
     PatchEmbed2D,
     PatchEmbed3D,
     PatchRecovery2D,
@@ -33,7 +33,6 @@ from ..utils import (
 
 @dataclass
 class MetaData(ModelMetaData):
-    name: str = "Pangu"
     # Optimization
     jit: bool = False  # ONNX Ops Conflict
     cuda_graphs: bool = True

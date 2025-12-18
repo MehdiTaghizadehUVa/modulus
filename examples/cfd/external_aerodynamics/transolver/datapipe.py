@@ -50,8 +50,8 @@ from torch.distributed.tensor._dtensor_spec import TensorMeta
 from torch.utils.data import Dataset
 
 from physicsnemo.distributed import DistributedManager
-from physicsnemo.distributed.shard_tensor import ShardTensor
-from physicsnemo.distributed._shard_tensor_spec import (
+from physicsnemo.domain_parallel.shard_tensor import ShardTensor
+from physicsnemo.domain_parallel._shard_tensor_spec import (
     ShardTensorSpec,
     _stride_from_contiguous_shape_C_style,
 )

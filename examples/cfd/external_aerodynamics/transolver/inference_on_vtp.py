@@ -22,8 +22,8 @@ from omegaconf import DictConfig
 
 import pyvista as pv
 from physicsnemo.models.transolver.transolver import Transolver
-from physicsnemo.launch.utils import load_checkpoint
-from physicsnemo.launch.logging import RankZeroLoggingWrapper, PythonLogger
+from physicsnemo.utils import load_checkpoint
+from physicsnemo.utils.logging import RankZeroLoggingWrapper, PythonLogger
 
 from physicsnemo.distributed import DistributedManager
 

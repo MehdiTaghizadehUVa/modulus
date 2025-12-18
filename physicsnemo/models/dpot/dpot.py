@@ -23,7 +23,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-from ..module import Module
+from physicsnemo.core.module import Module
 
 Tensor = torch.Tensor
 

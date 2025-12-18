@@ -15,7 +15,6 @@
 # limitations under the License.
 
 import torch
-from torch.optim import AdamW
 import torch.nn.functional as F
 from tqdm import trange
 import numpy as np
@@ -23,13 +22,11 @@ import matplotlib.pyplot as plt
 
 
 import hydra
-from hydra.utils import to_absolute_path
 from omegaconf import DictConfig
 
 from physicsnemo.models.topodiff import TopoDiff, Diffusion
 from physicsnemo.models.topodiff import UNetEncoder
-from physicsnemo.launch.logging import PythonLogger
-from physicsnemo.launch.logging.wandb import initialize_wandb
+from physicsnemo.utils.logging import PythonLogger
 from utils import load_data_topodiff, load_data
 
 

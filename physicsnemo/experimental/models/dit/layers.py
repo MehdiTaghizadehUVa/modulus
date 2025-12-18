@@ -54,11 +54,11 @@ try:
 except ImportError:
     NATTEN_AVAILABLE = False
 
-from physicsnemo.models import Module
-from physicsnemo.models.layers import Mlp
-from physicsnemo.distributed import ShardTensor
-from physicsnemo.distributed.shard_utils.natten_patches import partial_na2d
-from physicsnemo.models.utils import PatchEmbed2D
+from physicsnemo.core import Module
+from physicsnemo.nn import Mlp
+from physicsnemo.domain_parallel import ShardTensor
+from physicsnemo.domain_parallel.shard_utils.natten_patches import partial_na2d
+from physicsnemo.nn.utils import PatchEmbed2D
 
 
 def get_layer_norm(

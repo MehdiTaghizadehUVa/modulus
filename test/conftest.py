@@ -13,11 +13,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+import importlib
 import os
 import pathlib
 from collections import defaultdict
 
 import pytest
+import torch
 
 NFS_DATA_PATH = "/data/nfs/modulus-data"
 
@@ -95,8 +98,14 @@ def pytest_configure(config):
         DistributedManager.initialize()
         # Only load the plugin when running distributed tests
         config.pluginmanager.register(
-            __import__("plugins.distributed_print", fromlist=[""]),
+            __import__("test.plugins.distributed_print", fromlist=[""]),
             name="distributed_print",
+        )
+
+        # And this one sets up distributed fixtures for static parallel tests.
+        config.pluginmanager.register(
+            __import__("test.plugins.distributed_fixtures", fromlist=[""]),
+            name="distributed_fixtures",
         )
 
 
@@ -138,3 +147,27 @@ def pytest_collection_modifyitems(config, items):
                 or "multigpu_static" in item.keywords
             ):
                 item.add_marker(skip_all)
+
+
+def requires_module(names):
+    """
+    Decorator to skip a test if *any* of the given modules are missing.
+    Accepts a single module name or a list/tuple of names.
+    """
+    if isinstance(names, str):
+        names = [names]
+
+    missing = [n for n in names if importlib.util.find_spec(n) is None]
+
+    if missing:
+        reason = f"Missing dependencies: {', '.join(missing)}"
+        return pytest.mark.skipif(True, reason=reason)
+    else:
+        # No missing dependencies → no skip mark
+        return pytest.mark.skipif(False, reason="")
+
+
+@pytest.fixture(params=["cpu"] + (["cuda:0"] if torch.cuda.is_available() else []))
+def device(request):
+    """Device fixture that automatically skips CUDA tests when not available."""
+    return request.param

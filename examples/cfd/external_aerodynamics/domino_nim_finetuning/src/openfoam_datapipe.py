@@ -26,10 +26,9 @@ from pathlib import Path
 from typing import Any, Iterable, List, Literal, Mapping, Optional, Union, Callable
 
 import numpy as np
-import pandas as pd
 import pyvista as pv
 import vtk
-from physicsnemo.utils.domino.utils import *
+from physicsnemo.models.domino.utils import *
 from torch.utils.data import Dataset
 
 # AIR_DENSITY = 1.205

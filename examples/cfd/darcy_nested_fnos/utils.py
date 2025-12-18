@@ -23,7 +23,7 @@ from typing import Union, Tuple, Dict
 from torch import FloatTensor, Tensor
 from torch.nn import MSELoss
 from physicsnemo.distributed import DistributedManager
-from physicsnemo.launch.logging import PythonLogger, LaunchLogger
+from physicsnemo.utils.logging import PythonLogger, LaunchLogger
 from physicsnemo.datapipes.benchmarks.darcy import Darcy2D
 from physicsnemo.datapipes.benchmarks.kernels.initialization import (
     init_uniform_random_4d,

@@ -25,12 +25,12 @@ import numpy as np
 from omegaconf import DictConfig
 import torch
 from torch.utils.data import DataLoader
-from torch_geometric.loader import DataLoader as PyGDataLoader
+# from torch_geometric.loader import DataLoader as PyGDataLoader
 
 from physicsnemo.models.meshgraphnet import HybridMeshGraphNet
 from deforming_plate_dataset import DeformingPlateDataset
-from physicsnemo.launch.logging import PythonLogger
-from physicsnemo.launch.utils import load_checkpoint
+from physicsnemo.utils.logging import PythonLogger
+from physicsnemo.utils import load_checkpoint
 
 from helpers import add_world_edges
 

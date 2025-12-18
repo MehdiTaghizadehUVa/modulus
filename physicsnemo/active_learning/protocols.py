@@ -86,7 +86,7 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import DataLoader
 
-from physicsnemo import Module
+from physicsnemo.core import Module
 
 # T is used to denote a data structure that contains inputs for a model and ground truths
 T = TypeVar("T")

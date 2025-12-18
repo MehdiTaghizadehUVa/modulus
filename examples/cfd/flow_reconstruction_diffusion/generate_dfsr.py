@@ -29,7 +29,7 @@ from omegaconf import DictConfig
 from utils import StackedRandomGenerator, open_url
 
 from physicsnemo.distributed import DistributedManager
-from physicsnemo.launch.logging import PythonLogger, RankZeroLoggingWrapper
+from physicsnemo.utils.logging import PythonLogger, RankZeroLoggingWrapper
 from utils import EasyDict, construct_class_by_name
 import copy
 import logging

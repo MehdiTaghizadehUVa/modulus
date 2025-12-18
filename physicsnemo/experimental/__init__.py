@@ -16,9 +16,7 @@
 
 import warnings
 
-
-class ExperimentalFeatureWarning(UserWarning):
-    """Warning raised when using experimental features that may change without notice."""
+from physicsnemo.core.warnings import ExperimentalFeatureWarning
 
 
 warnings.warn(

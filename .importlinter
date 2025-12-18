@@ -1,0 +1,98 @@
+[importlinter]
+root_package = physicsnemo
+include_external_packages = True
+contract_types =
+    forbidden_import: test.ci_tests.prevent_untracked_imports.ForbiddenImportContract
+
+[importlinter:contract:physicsnemo-modules]
+name = Prevent Upward Imports in the PhysicsNemo Structure
+type = layers
+containers=
+   physicsnemo
+layers = 
+   experimental
+   active_learning
+   models : datapipes : metrics : domain_parallel
+   nn
+   utils
+   distributed 
+   core
+
+[importlinter:contract:physicsnemo-core]
+name = Control Dependencies in PhysicsNeMo core
+type = layers
+containers=
+   physicsnemo.core
+layers = 
+   module : registry
+   meta
+   warnings | version_check | filesystem
+
+
+[importlinter:contract:physicsnemo-distributed]
+name = Control Dependencies in PhysicsNeMo distributed
+type = layers
+containers=
+   physicsnemo.distributed
+layers = 
+   fft | autograd
+   mappings
+   utils
+   manager
+   config
+
+[importlinter:contract:physicsnemo-utils]
+name = Control Dependencies in PhysicsNeMo utils
+type = layers
+containers=
+   physicsnemo.utils
+layers = 
+   mesh | insolation | zenith_angle
+   profiling
+   checkpoint
+   capture
+   logging | memory
+
+[importlinter:contract:physicsnemo-nn]
+name = Control Dependencies in PhysicsNeMo nn
+type = layers
+containers=
+   physicsnemo.nn
+layers = 
+   fourier_layers | transformer_layers
+   dgm_layers | mlp_layers | fully_connected_layers | gnn_layers
+    activations | attention_layers | ball_query | conv_layers  | drop | fft  | fused_silu | interpolation | kan_layers  | resample_layers | sdf | siren_layers | spectral_layers | transformer_decoder  | weight_fact | weight_norm
+   neighbors 
+   utils
+
+[importlinter:contract:physicsnemo-nn-gnn-layers]
+name = Control Internal Dependencies in PhysicsNeMo nn GNN Layers
+type = layers
+containers=
+   physicsnemo.nn.gnn_layers
+layers = 
+   bsms
+   mesh_graph_decoder | mesh_graph_encoder
+   mesh_node_block | mesh_edge_block
+   mesh_graph_mlp 
+   utils  
+   graph
+   distributed_graph
+   graph_types
+
+[importlinter:contract:physicsnemo-models]
+name = Prevent Imports between physicsnemo models
+type = layers
+containers=
+   physicsnemo.models
+layers = 
+   mesh_reduced
+   afno | dlwp | dlwp_healpix | domino | dpot | fengwu | figconvnet | fno | graphcast | meshgraphnet | pangu | pix2pix | rnn |  srrn | swinvrnn | topodiff | transolver  | vfgn 
+   unet | diffusion  | dlwp_healpix_layers 
+
+[importlinter:contract:physicsnemo-external-imports]
+name = Prevent Non-listed external imports in physicsnemo
+type = forbidden_import
+container = physicsnemo
+exclude = 
+   datapipes

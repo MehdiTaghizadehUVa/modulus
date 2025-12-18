@@ -33,12 +33,12 @@ from physicsnemo.datapipes.gnn.vortex_shedding_re300_1000_dataset import (
     VortexSheddingRe300To1000Dataset,
 )
 from physicsnemo.distributed.manager import DistributedManager
-from physicsnemo.launch.logging import (
+from physicsnemo.utils.logging import (
     PythonLogger,
     RankZeroLoggingWrapper,
 )
-from physicsnemo.launch.logging.wandb import initialize_wandb
-from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
+from physicsnemo.utils.logging.wandb import initialize_wandb
+from physicsnemo.utils import load_checkpoint, save_checkpoint
 from physicsnemo.models.mesh_reduced.mesh_reduced import Mesh_Reduced
 
 C = Constants()

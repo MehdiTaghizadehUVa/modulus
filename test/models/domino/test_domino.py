@@ -20,10 +20,10 @@ from typing import Sequence
 
 import pytest
 import torch
-from pytest_utils import import_or_fail
 
-from ..common.fwdaccuracy import save_output
-from ..common.utils import compare_output
+from test.common.fwdaccuracy import save_output
+from test.common.utils import compare_output
+from test.conftest import requires_module
 
 
 def validate_domino(
@@ -43,7 +43,9 @@ def validate_domino(
     if file_name is None:
         file_name = model.meta.name + "_output.pth"
     file_name = (
-        Path(__file__).parents[1].resolve() / Path("data") / Path(file_name.lower())
+        Path(__file__).parents[1].resolve()
+        / Path("domino/data")
+        / Path(file_name.lower())
     )
     # If file does not exist, we will create it then error
     # Model should then reproduce it on next pytest run
@@ -151,8 +153,8 @@ class model_params:
     geometry_local = geometry_local
 
 
-@import_or_fail("warp")
-@pytest.mark.parametrize("device", ["cuda:0"])
+@requires_module("warp")
+# @pytest.mark.parametrize("device", ["cuda:0"])
 @pytest.mark.parametrize("processor_type", ["unet", "conv"])
 def test_domino_forward(device, processor_type, pytestconfig):
     """Test domino forward pass"""

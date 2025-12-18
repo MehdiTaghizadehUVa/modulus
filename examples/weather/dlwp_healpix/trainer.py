@@ -31,7 +31,7 @@ from tqdm import tqdm
 # custom
 from utils import write_checkpoint
 
-from physicsnemo.launch.logging import PythonLogger, RankZeroLoggingWrapper
+from physicsnemo.utils.logging import PythonLogger, RankZeroLoggingWrapper
 
 
 class Trainer:

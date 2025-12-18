@@ -23,7 +23,7 @@ from torch_geometric.data import Data
 from torch_geometric.utils import coalesce, add_self_loops
 
 from physicsnemo.datapipes.gnn.utils import load_json, save_json
-from physicsnemo.launch.logging import PythonLogger
+from physicsnemo.utils.logging import PythonLogger
 
 STATS_DIRNAME = "stats"
 NODE_STATS_FILE = "node_stats.json"

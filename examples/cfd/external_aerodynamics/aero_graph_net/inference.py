@@ -30,7 +30,7 @@ import torch
 from omegaconf import DictConfig
 
 from physicsnemo.distributed.manager import DistributedManager
-from physicsnemo.launch.utils import load_checkpoint
+from physicsnemo.utils import load_checkpoint
 
 from loggers import init_python_logging
 from utils import batch_as_dict

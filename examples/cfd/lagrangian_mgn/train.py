@@ -29,7 +29,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch_geometric.loader import DataLoader as PyGDataLoader
 
 from physicsnemo.distributed.manager import DistributedManager
-from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
+from physicsnemo.utils import load_checkpoint, save_checkpoint
 
 from loggers import CompositeLogger, ExperimentLogger, get_gpu_info, init_python_logging
 

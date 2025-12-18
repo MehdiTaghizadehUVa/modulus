@@ -13,10 +13,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
 
-from .datapipes.datapipe import Datapipe
-from .datapipes.meta import DatapipeMetaData
-from .models.meta import ModelMetaData
-from .models.module import Module
+# from .datapipes.datapipe import Datapipe  # noqa E402
+# from .datapipes.meta import DatapipeMetaData  # noqa E402
+from .core.meta import ModelMetaData  # noqa E402
+from .core.module import Module  # noqa E402
 
 __version__ = "1.4.0a0"

@@ -23,8 +23,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from hydra.utils import to_absolute_path
-from physicsnemo.launch.logging import LaunchLogger
-from physicsnemo.launch.utils.checkpoint import save_checkpoint
+from physicsnemo.utils.logging import LaunchLogger
+from physicsnemo.utils.checkpoint import save_checkpoint
 from physicsnemo.models.fno import FNO
 from physicsnemo.models.mlp import FullyConnected
 from physicsnemo.sym.eq.pdes.diffusion import Diffusion

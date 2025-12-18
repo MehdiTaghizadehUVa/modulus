@@ -33,16 +33,16 @@ torch._dynamo.config.suppress_errors = True  # TODO check if this can be removed
 import os
 
 from physicsnemo.models.graphcast.graph_cast_net import GraphCastNet
-from physicsnemo.utils.graphcast.loss import (
+from physicsnemo.models.graphcast.utils.loss import (
     CellAreaWeightedLossFunction,
     GraphCastLossFunction,
 )
-from physicsnemo.launch.logging import (
+from physicsnemo.utils.logging import (
     PythonLogger,
     RankZeroLoggingWrapper,
 )
-from physicsnemo.launch.logging.wandb import initialize_wandb
-from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
+from physicsnemo.utils.logging.wandb import initialize_wandb
+from physicsnemo.utils import load_checkpoint, save_checkpoint
 
 from train_utils import count_trainable_params, prepare_input
 from loss.utils import normalized_grid_cell_area
@@ -50,7 +50,7 @@ from train_base import BaseTrainer
 from validation_base import Validation
 from physicsnemo.datapipes.climate import ERA5HDF5Datapipe, SyntheticWeatherDataLoader
 from physicsnemo.distributed import DistributedManager
-from physicsnemo.utils.graphcast.data_utils import StaticData
+from physicsnemo.models.graphcast.utils.data_utils import StaticData
 
 import hydra
 from hydra.utils import to_absolute_path

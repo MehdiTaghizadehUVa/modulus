@@ -21,20 +21,19 @@ import torch.nn as nn
 from torch import Tensor
 
 import physicsnemo  # noqa: F401 for docs
-from physicsnemo.models.layers import get_activation
-from physicsnemo.models.meta import ModelMetaData
-from physicsnemo.models.module import Module
+from physicsnemo.core.meta import ModelMetaData
+from physicsnemo.core.module import Module
 from physicsnemo.models.rnn.layers import (
     _ConvGRULayer,
     _ConvLayer,
     _ConvResidualBlock,
     _TransposeConvLayer,
 )
+from physicsnemo.nn import get_activation
 
 
 @dataclass
 class MetaData(ModelMetaData):
-    name: str = "One2ManyRNN"
     # Optimization
     jit: bool = False
     cuda_graphs: bool = False

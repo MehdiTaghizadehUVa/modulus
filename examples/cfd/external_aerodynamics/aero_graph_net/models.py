@@ -21,14 +21,13 @@ from torch import Tensor
 
 import physicsnemo.models.meshgraphnet.meshgraphnet as mgn
 
-from physicsnemo.models.gnn_layers.utils import GraphType
-from physicsnemo.models.layers.activations import get_activation
-from physicsnemo.models.meta import ModelMetaData
+from physicsnemo.core import ModelMetaData
+from physicsnemo.nn.gnn_layers.utils import GraphType
+from physicsnemo.nn.activations import get_activation
 
 
 @dataclass
 class MetaData(ModelMetaData):
-    name: str = "AeroGraphNet"
     jit: bool = False
     cuda_graphs: bool = False
     amp_cpu: bool = False

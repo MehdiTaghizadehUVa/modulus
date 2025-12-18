@@ -22,13 +22,13 @@ import time
 import numpy as np
 import torch
 import psutil
-from physicsnemo.models import Module
+from physicsnemo.core import Module
 from physicsnemo.distributed import DistributedManager
 from physicsnemo.metrics.diffusion import EDMLoss, EDMLossLogUniform
-from physicsnemo.utils.diffusion import InfiniteSampler
+from physicsnemo.models.diffusion.training_utils import InfiniteSampler
 
-from physicsnemo.launch.utils import save_checkpoint, load_checkpoint
-from physicsnemo.launch.logging import PythonLogger, RankZeroLoggingWrapper
+from physicsnemo.utils import save_checkpoint, load_checkpoint
+from physicsnemo.utils.logging import PythonLogger, RankZeroLoggingWrapper
 from utils.nn import (
     diffusion_model_forward,
     regression_loss_fn,

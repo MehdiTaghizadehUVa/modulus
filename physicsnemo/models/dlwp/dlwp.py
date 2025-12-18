@@ -22,9 +22,9 @@ import torch
 import torch.nn as nn
 
 import physicsnemo  # noqa: F401 for docs
-from physicsnemo.models.layers import get_activation
-from physicsnemo.models.meta import ModelMetaData
-from physicsnemo.models.module import Module
+from physicsnemo.core.meta import ModelMetaData
+from physicsnemo.core.module import Module
+from physicsnemo.nn import get_activation
 
 Tensor = torch.Tensor
 
@@ -184,7 +184,6 @@ def _cubed_non_conv_wrapper(faces, layer):
 
 @dataclass
 class MetaData(ModelMetaData):
-    name: str = "DLWP"
     # Optimization
     jit: bool = False
     cuda_graphs: bool = True

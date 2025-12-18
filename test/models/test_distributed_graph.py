@@ -18,9 +18,9 @@ import os
 
 import pytest
 import torch
-from pytest_utils import import_or_fail
 
 from physicsnemo.distributed import DistributedManager
+from test.conftest import requires_module
 
 
 def get_random_graph(device):
@@ -342,7 +342,7 @@ def run_test_distributed_graph(
         del os.environ["MASTER_PORT"]
 
 
-@import_or_fail("dgl")
+@requires_module("dgl")
 @pytest.mark.multigpu_dynamic
 @pytest.mark.parametrize("partition_scheme", ["lat_lon_bbox", "default"])
 def test_distributed_graph(partition_scheme, pytestconfig):

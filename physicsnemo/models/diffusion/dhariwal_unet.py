@@ -21,7 +21,9 @@ import numpy as np
 import torch
 from torch.nn.functional import silu
 
-from physicsnemo.models.diffusion import (
+from physicsnemo.core.meta import ModelMetaData
+from physicsnemo.core.module import Module
+from physicsnemo.models.diffusion.layers import (
     Conv2d,
     Linear,
     PositionalEmbedding,
@@ -29,8 +31,6 @@ from physicsnemo.models.diffusion import (
     get_group_norm,
 )
 from physicsnemo.models.diffusion.utils import _recursive_property
-from physicsnemo.models.meta import ModelMetaData
-from physicsnemo.models.module import Module
 
 # ------------------------------------------------------------------------------
 # Backbone architectures
@@ -39,7 +39,6 @@ from physicsnemo.models.module import Module
 
 @dataclass
 class MetaData(ModelMetaData):
-    name: str = "DhariwalUNet"
     # Optimization
     jit: bool = False
     cuda_graphs: bool = False

@@ -46,7 +46,7 @@ from physicsnemo.datapipes.climate.utils.invariant import latlon_grid
 from physicsnemo.datapipes.climate.utils.zenith_angle import cos_zenith_angle
 from physicsnemo.datapipes.datapipe import Datapipe
 from physicsnemo.datapipes.meta import DatapipeMetaData
-from physicsnemo.launch.logging import PythonLogger
+from physicsnemo.utils.logging import PythonLogger
 
 Tensor = torch.Tensor
 

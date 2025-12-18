@@ -28,8 +28,11 @@ from physicsnemo.metrics.diffusion import (
     VELoss_dfsr,
     VPLoss,
 )
-from physicsnemo.models.diffusion import EDMPrecondSuperResolution, UNet
-from physicsnemo.utils.patching import RandomPatching2D
+from physicsnemo.models.diffusion import (
+    CorrDiffRegressionUNet,
+    EDMPrecondSuperResolution,
+)
+from physicsnemo.models.diffusion.patching import RandomPatching2D
 
 # VPLoss tests
 
@@ -233,10 +236,9 @@ def test_call_method_regressionloss():
 
 
 # More realistic test with a UNet model
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_call_method_regressionloss_with_unet(device):
     res, inc, outc = 64, 2, 3
-    model = UNet(
+    model = CorrDiffRegressionUNet(
         img_resolution=res,
         img_in_channels=inc,
         img_out_channels=outc,
@@ -251,11 +253,10 @@ def test_call_method_regressionloss_with_unet(device):
 
 
 # More realistic test with a UNet model and lead-time conditioning
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_call_method_regressionloss_with_lead_time_unet(device):
     res, inc, outc = 64, 3, 4
     N_pos, lead_time_channels = 2, 4
-    model = UNet(
+    model = CorrDiffRegressionUNet(
         img_resolution=res,
         img_in_channels=inc + N_pos + lead_time_channels,
         img_out_channels=outc,
@@ -315,12 +316,11 @@ def test_call_method_regressionlossce():
 
 
 # More realistic test with a UNet model and lead-time conditioning
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_call_method_regressionlossce_with_unet(device):
     res, inc, outc = 64, 3, 4
     N_pos, lead_time_channels = 2, 4
     prob_channels = [0, 2]
-    model = UNet(
+    model = CorrDiffRegressionUNet(
         img_resolution=res,
         img_in_channels=inc + N_pos + lead_time_channels,
         img_out_channels=outc,
@@ -461,11 +461,10 @@ def test_residualloss_call_method():
 
 
 # More realistic test with a UNet model
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_call_method_residualloss_with_unet(device):
     res, inc, outc = 64, 2, 3
     N_pos = 2
-    regression_model = UNet(
+    regression_model = CorrDiffRegressionUNet(
         img_resolution=res,
         img_in_channels=inc + N_pos,
         img_out_channels=outc,
@@ -495,11 +494,10 @@ def test_call_method_residualloss_with_unet(device):
 
 
 # Test with UNets and hr_mean_conditioning
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_call_method_residualloss_with_unet_hr_mean_conditioning(device):
     res, inc, outc = 64, 2, 3
     N_pos = 2
-    regression_model = UNet(
+    regression_model = CorrDiffRegressionUNet(
         img_resolution=res,
         img_in_channels=inc + N_pos,
         img_out_channels=outc,
@@ -527,12 +525,11 @@ def test_call_method_residualloss_with_unet_hr_mean_conditioning(device):
 
 
 # Test with UNets, hr_mean_conditioning, and lead-time aware embedding
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_call_method_residualloss_with_lt_unet_hr_mean_conditioning(device):
     res, inc, outc = 64, 2, 3
     N_pos, lead_time_channels = 2, 4
     prob_channels = [0, 2]
-    regression_model = UNet(
+    regression_model = CorrDiffRegressionUNet(
         img_resolution=res,
         img_in_channels=inc + N_pos + lead_time_channels,
         img_out_channels=outc,

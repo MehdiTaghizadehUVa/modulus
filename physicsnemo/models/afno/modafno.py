@@ -23,10 +23,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import physicsnemo  # noqa: F401 for docs
-import physicsnemo.models.layers.fft as fft
+import physicsnemo.nn.fft as fft
+from physicsnemo.core.meta import ModelMetaData
+from physicsnemo.core.module import Module
 from physicsnemo.models.afno.afno import AFNO2DLayer, AFNOMlp, PatchEmbed
-from physicsnemo.models.meta import ModelMetaData
-from physicsnemo.models.module import Module
 
 from .modembed import ModEmbedNet
 
@@ -441,7 +441,6 @@ class Block(nn.Module):
 
 @dataclass
 class MetaData(ModelMetaData):
-    name: str = "ModAFNO"
     # Optimization
     jit: bool = False  # ONNX Ops Conflict
     cuda_graphs: bool = True

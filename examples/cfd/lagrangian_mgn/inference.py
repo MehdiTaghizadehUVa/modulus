@@ -34,7 +34,7 @@ from torch import Tensor
 from torch_geometric.loader import DataLoader as PyGDataLoader
 
 from physicsnemo.datapipes.gnn.lagrangian_dataset import graph_update
-from physicsnemo.launch.utils import load_checkpoint
+from physicsnemo.utils import load_checkpoint
 
 from loggers import get_gpu_info, init_python_logging
 

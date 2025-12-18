@@ -27,7 +27,7 @@ import psutil
 import torch
 from torch.nn.parallel import DistributedDataParallel
 from training_stats import default_collector, report, report0
-from physicsnemo.utils.diffusion.utils import (
+from physicsnemo.models.diffusion.training_utils import (
     InfiniteSampler,
     check_ddp_consistency,
     construct_class_by_name,

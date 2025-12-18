@@ -24,7 +24,8 @@ import numpy as np
 import torch
 from torch import Tensor
 
-from physicsnemo.utils.patching import RandomPatching2D
+# from physicsnemo.utils.patching import RandomPatching2D
+from physicsnemo.models.diffusion.patching import RandomPatching2D
 
 
 class VPLoss:

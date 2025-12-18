@@ -30,23 +30,18 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
+import importlib
 from dataclasses import dataclass
 
 import numpy as np
 import torch
 import torch.nn as nn
 
-try:
-    import transformer_engine.pytorch as te
-
-    TE_AVAILABLE = True
-except (ImportError, FileNotFoundError):
-    TE_AVAILABLE = False
-
 import physicsnemo  # noqa: F401 for docs
+from physicsnemo.core.meta import ModelMetaData
+from physicsnemo.core.module import Module
+from physicsnemo.core.version_check import check_version_spec
 
-from ..meta import ModelMetaData
-from ..module import Module
 from .Embedding import timestep_embedding
 
 # from .Physics_Attention import Physics_Attention_Structured_Mesh_2D
@@ -55,6 +50,13 @@ from .Physics_Attention import (
     PhysicsAttentionStructuredMesh2D,
     PhysicsAttentionStructuredMesh3D,
 )
+
+TE_AVAILABLE = check_version_spec("transformer_engine", hard_fail=False)
+if TE_AVAILABLE:
+    te = importlib.import_module("transformer_engine.pytorch")
+else:
+    te = None
+
 
 ACTIVATION = {
     "gelu": nn.GELU,
@@ -216,7 +218,6 @@ class Transolver_block(nn.Module):
 
 @dataclass
 class MetaData(ModelMetaData):
-    name: str = "Transolver"
     # Optimization
     jit: bool = False
     cuda_graphs: bool = False

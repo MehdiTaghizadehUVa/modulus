@@ -23,7 +23,7 @@ import numpy as np
 from numba import jit, prange
 import xarray as xr
 
-from physicsnemo.utils.diffusion import convert_datetime_to_cftime
+from physicsnemo.models.diffusion.training_utils import convert_datetime_to_cftime
 
 from datasets.base import ChannelMetadata, DownscalingDataset
 
