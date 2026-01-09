@@ -230,8 +230,27 @@ def pretrain_model(config, device, is_logger, source_data_config, logger=None):
     scheduler_src = create_scheduler(optimizer_src, config, logger)
     
     # Create loss and data processor
-    # Wrap LpLoss to filter out unexpected kwargs from Trainer
-    l2loss = LpLossWrapper(LpLoss(d=2, p=2))
+    # Get loss type from config, default to 'l2'
+    def create_loss(loss_type_str, default="l2"):
+        """Helper function to create loss function from string."""
+        loss_type_str = loss_type_str.lower()
+        if loss_type_str == "l1":
+            return LpLossWrapper(LpLoss(d=2, p=1)), "l1"
+        elif loss_type_str == "l2":
+            return LpLossWrapper(LpLoss(d=2, p=2)), "l2"
+        else:
+            logger.warning(f"Unknown loss type '{loss_type_str}', defaulting to '{default}'")
+            return LpLossWrapper(LpLoss(d=2, p=2)), default
+    
+    training_loss_type = config.training.get("training_loss", "l2")
+    training_loss_fn, training_loss_name = create_loss(training_loss_type)
+    logger.info(f"Using {training_loss_name.upper()} loss for training")
+    
+    # Use testing_loss for evaluation if specified, otherwise use training_loss
+    testing_loss_type = config.training.get("testing_loss", training_loss_type)
+    eval_loss_fn, eval_loss_name = create_loss(testing_loss_type, default=training_loss_name)
+    if testing_loss_type.lower() != training_loss_type.lower():
+        logger.info(f"Using {eval_loss_name.upper()} loss for evaluation (different from training)")
     data_processor = FloodGINODataProcessor(
         device=device,
         target_norm=normalizers.get("target", None),
@@ -265,8 +284,8 @@ def pretrain_model(config, device, is_logger, source_data_config, logger=None):
         test_loaders={"source_val": source_val_loader},
         optimizer=optimizer_src,
         scheduler=scheduler_src,
-        training_loss=l2loss,
-        eval_losses={"l2": l2loss},
+        training_loss=training_loss_fn,
+        eval_losses={eval_loss_name: eval_loss_fn},
         save_dir=save_dir,
         save_best=save_best,  # Save best model based on validation metric (from config)
         save_every=save_every,  # Save checkpoint every N epochs (from config)

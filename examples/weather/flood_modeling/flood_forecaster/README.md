@@ -125,6 +125,20 @@ The training pipeline will:
 
 Training logs, model checkpoints, and metrics will be saved in the directory specified in `config.yaml`.
 
+**Resuming Training:**
+
+To resume training from a checkpoint, set the appropriate checkpoint path in `conf/config.yaml`:
+
+- **Resume pretraining**: Set `checkpoint.resume_from_source` to the pretraining checkpoint directory (e.g., `"./checkpoints_flood_forecaster/pretrain"`). This will resume the source domain pretraining stage from the saved checkpoint.
+
+- **Resume domain adaptation**: Set `checkpoint.resume_from_adapt` to the domain adaptation checkpoint directory (e.g., `"./checkpoints_flood_forecaster/adapt"`). This will resume the domain adaptation stage from the saved checkpoint.
+
+- **For inference**: Set `checkpoint.resume_from_adapt` (preferred) or `checkpoint.resume_from_source` to load a trained model. The inference script will use `resume_from_adapt` if available, otherwise falls back to `resume_from_source`.
+
+Checkpoints are saved in subdirectories under `checkpoint.save_dir`:
+- `{save_dir}/pretrain/` - Contains pretraining checkpoints
+- `{save_dir}/adapt/` - Contains domain adaptation checkpoints
+
 ### Inference
 
 To perform autoregressive rollout and generate evaluation visualizations:
@@ -139,6 +153,8 @@ To perform autoregressive rollout and generate evaluation visualizations:
 ```bash
 python inference.py
 ```
+
+**Note**: The inference script currently does not support multi-GPU or multi-node distributed inference. It runs on a single GPU/device. For distributed inference, you would need to modify the rollout logic to split samples across ranks.
 
 3. The script will output comprehensive visualizations and metrics:
    - **Publication maps**: Water depth and velocity comparisons at selected time steps (12, 24, 36, 48, 60, 72 hours)
@@ -230,13 +246,15 @@ source_data:
 
 ```yaml
 model:
-  model_arch: 'gino'
+  model_arch: 'gino'  # Note: This codebase is hardcoded for GINO architecture
   data_channels: 20
   out_channels: 3
   fno_n_modes: [16, 16]
   fno_hidden_channels: 64
   gno_embed_channels: 32
 ```
+
+**Note**: While `model_arch` is a parameter for neuralop's `get_model` function, the FloodForecaster codebase is specifically designed for the GINO (Geometry-Informed Neural Operator) architecture. The code includes GINO-specific wrappers (`GINOWrapper`), data processors (`FloodGINODataProcessor`), and domain adaptation logic that assumes GINO's architecture. Changing `model_arch` to a different model type would require significant code modifications to support other architectures.
 
 ### Training Settings
 
@@ -249,6 +267,46 @@ training:
   da_lambda_max: 1.0
   da_class_loss_weight: 0.0
 ```
+
+### Distributed Computing
+
+FloodForecaster uses `physicsnemo`'s `DistributedManager` for distributed training, which automatically detects and configures the distributed environment. The framework supports:
+
+- **torchrun**: For PyTorch-native distributed training
+- **mpirun**: For OpenMPI-based distributed training  
+- **SLURM**: For cluster-based distributed training
+
+**Configuration:**
+
+The `distributed` section in `config.yaml` contains minimal settings:
+
+```yaml
+distributed:
+  seed: 123
+  device: 'cuda:0'  # Fallback device for non-distributed execution
+```
+
+**Key Points:**
+
+- **Device Assignment**: When running in distributed mode (via `torchrun` or `mpirun`), the device is automatically set to `cuda:{local_rank}` for each process. The `device` field in the config is only used as a fallback for single-GPU/CPU execution.
+
+- **No Manual Configuration Needed**: `DistributedManager.initialize()` automatically detects:
+  - Number of processes (`world_size`)
+  - Process rank (`rank`)
+  - Local rank (`local_rank`)
+  - Appropriate device assignment
+
+- **Example Distributed Training:**
+
+  ```bash
+  # Single node, multiple GPUs
+  torchrun --standalone --nnodes=1 --nproc_per_node=4 train.py
+  
+  # Multi-node (example)
+  torchrun --nnodes=2 --nproc_per_node=4 --node_rank=0 --master_addr=<master_ip> train.py
+  ```
+
+The framework handles all distributed setup automatically - you don't need to specify device lists or wireup configurations.
 
 ### Domain Adaptation
 
@@ -327,12 +385,8 @@ If you use FloodForecaster in your research, please cite:
 
 For questions, feedback, or collaborations:
 
-- **Mehdi Taghizadeh** – <jrj6wm@virginia.edu>
+- **Mehdi Taghizadeh** (Code Contributor and Maintainer) – <jrj6wm@virginia.edu>
 - **Zanko Zandsalimi** – <mfx2uq@virginia.edu>
 - **Mohammad Amin Nabian** – <mnabian@nvidia.com>
 - **Jonathan L. Goodall** – <jlg7h@virginia.edu>
 - **Negin Alemazkoor** (Corresponding Author) – <na7fp@virginia.edu>
-
-## License
-
-This work is licensed under the Apache License 2.0. See LICENSE file for details.

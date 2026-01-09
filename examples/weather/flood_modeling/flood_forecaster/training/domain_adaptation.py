@@ -1044,7 +1044,31 @@ def adapt_model(
     scheduler_adapt = create_scheduler(optimizer_adapt, config, logger)
 
     # Create loss - wrap with LpLossWrapper to filter out unexpected kwargs
-    l2loss = LpLossWrapper(LpLoss(d=2, p=2))
+    # Get loss type from config, default to 'l2'
+    def create_loss(loss_type_str, default="l2"):
+        """Helper function to create loss function from string."""
+        loss_type_str = loss_type_str.lower()
+        if loss_type_str == "l1":
+            return LpLossWrapper(LpLoss(d=2, p=1)), "l1"
+        elif loss_type_str == "l2":
+            return LpLossWrapper(LpLoss(d=2, p=2)), "l2"
+        else:
+            if logger:
+                logger.warning(f"Unknown loss type '{loss_type_str}', defaulting to '{default}'")
+            return LpLossWrapper(LpLoss(d=2, p=2)), default
+    
+    training_loss_type = config.training.get("training_loss", "l2")
+    training_loss_fn, training_loss_name = create_loss(training_loss_type)
+    if logger:
+        logger.info(f"Using {training_loss_name.upper()} loss for domain adaptation training")
+    
+    # Use testing_loss for evaluation if specified, otherwise use training_loss
+    # Note: Currently domain adaptation uses the same loss for both training and evaluation
+    # but we create it here for consistency and future extensibility
+    testing_loss_type = config.training.get("testing_loss", training_loss_type)
+    eval_loss_fn, eval_loss_name = create_loss(testing_loss_type, default=training_loss_name)
+    if testing_loss_type.lower() != training_loss_type.lower() and logger:
+        logger.info(f"Note: testing_loss specified but domain adaptation currently uses training_loss for evaluation")
 
     # Create custom domain adaptation trainer
     trainer_adapt = DomainAdaptationTrainer(
@@ -1067,7 +1091,7 @@ def adapt_model(
         tgt_loader=DataLoader(target_train_ds, batch_size=target_data_config.batch_size, shuffle=True),
         optimizer=optimizer_adapt,
         scheduler=scheduler_adapt,
-        training_loss=l2loss,
+        training_loss=training_loss_fn,
         # da_class_loss_weight controls adversarial training strength
         # Default 0.0 disables adversarial training (standard fine-tuning)
         # Set to positive value (e.g., 0.1) to enable domain adaptation
