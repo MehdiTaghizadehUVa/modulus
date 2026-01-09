@@ -88,7 +88,7 @@ FloodForecaster expects data organized in a structured format with the following
 
 Data should be organized in folders with consistent naming patterns as specified in the configuration. The model supports both source and target domain datasets for domain adaptation training.
 
-**Dataset Link**: The dataset used in the paper is available at: https://github.com/MehdiTaghizadehUVa/FloodForecaster
+**Data Generation Scripts**: Scripts for generating the dataset used in the paper are available at: https://github.com/MehdiTaghizadehUVa/FloodForecaster. This repository provides utilities for creating synthetic hydrographs and automating HEC-RAS simulations to generate training data, but does not include the pre-generated dataset itself.
 
 ## Quick Start
 
