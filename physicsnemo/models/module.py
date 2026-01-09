@@ -709,7 +709,7 @@ class Module(torch.nn.Module):
                 model_bytes = archive.read("model.pt")
 
             # Load state dict after closing archive
-            model_dict = torch.load(io.BytesIO(model_bytes), map_location=device, weights_only=False)
+            model_dict = torch.load(io.BytesIO(model_bytes), map_location=device)
 
             # Load state_dict into the model
             _load_state_dict_with_logging(self, model_dict, strict=strict)
@@ -735,7 +735,7 @@ class Module(torch.nn.Module):
 
                 # Load the model weights
                 model_dict = torch.load(
-                    local_path.joinpath("model.pt"), map_location=device, weights_only=False
+                    local_path.joinpath("model.pt"), map_location=device
                 )
 
             # Load state dict into the model
@@ -1014,7 +1014,7 @@ class Module(torch.nn.Module):
                 model_bytes = archive.read("model.pt")
 
             # Load state dict after closing archive
-            model_dict = torch.load(io.BytesIO(model_bytes), map_location=model.device, weights_only=False)
+            model_dict = torch.load(io.BytesIO(model_bytes), map_location=model.device)
 
             # Load state_dict into the model
             _load_state_dict_with_logging(model, model_dict, strict=strict)
@@ -1056,7 +1056,7 @@ class Module(torch.nn.Module):
 
                 # Load the model weights
                 model_dict = torch.load(
-                    local_path.joinpath("model.pt"), map_location=model.device, weights_only=False
+                    local_path.joinpath("model.pt"), map_location=model.device
                 )
 
             # Load state_dict into the model
