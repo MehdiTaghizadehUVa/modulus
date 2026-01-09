@@ -115,7 +115,7 @@ pip install -r requirements.txt
 Run the training script:
 
 ```bash
-python train.py --config-path conf --config-name config
+python train.py
 ```
 
 The training pipeline will:
@@ -137,7 +137,7 @@ To perform autoregressive rollout and generate evaluation visualizations:
 2. Run the inference script:
 
 ```bash
-python inference.py --config-path conf --config-name config
+python inference.py
 ```
 
 3. The script will output comprehensive visualizations and metrics:
