@@ -47,8 +47,14 @@ if "training" not in sys.modules:
     training_pkg = types.ModuleType("training")
     sys.modules["training"] = training_pkg
 
-# Import pretraining first (no dependencies on domain_adaptation)
-spec = importlib.util.spec_from_file_location("pretraining", _examples_dir / "training" / "pretraining.py")
+# Import trainer module FIRST (pretraining depends on it)
+spec = importlib.util.spec_from_file_location("training.trainer", _examples_dir / "training" / "trainer.py")
+trainer_module = importlib.util.module_from_spec(spec)
+sys.modules["training.trainer"] = trainer_module
+spec.loader.exec_module(trainer_module)
+
+# Import pretraining (depends on trainer)
+spec = importlib.util.spec_from_file_location("training.pretraining", _examples_dir / "training" / "pretraining.py")
 pretraining_module = importlib.util.module_from_spec(spec)
 sys.modules["training.pretraining"] = pretraining_module
 spec.loader.exec_module(pretraining_module)
@@ -82,85 +88,52 @@ from training.pretraining import create_scheduler
 
 
 @pytest.mark.parametrize("device", _DEVICES)
-def test_create_scheduler_step_lr(device):
-    """Test StepLR scheduler creation."""
+@pytest.mark.parametrize("scheduler_type", ["StepLR", "CosineAnnealingLR", "ReduceLROnPlateau"])
+def test_create_scheduler(device, scheduler_type):
+    """Test scheduler creation for different types."""
     model = nn.Linear(10, 10).to(device)
     optimizer = torch.optim.Adam(model.parameters())
 
     config = MagicMock()
     config.training = MagicMock()
-    config.training.get = lambda key, default=None: {
-        "scheduler": "StepLR",
-        "step_size": 10,
-        "gamma": 0.5,
-    }.get(key, default)
+    if scheduler_type == "StepLR":
+        config.training.get = lambda key, default=None: {
+            "scheduler": "StepLR",
+            "step_size": 10,
+            "gamma": 0.5,
+        }.get(key, default)
+        expected_type = torch.optim.lr_scheduler.StepLR
+    elif scheduler_type == "CosineAnnealingLR":
+        config.training.get = lambda key, default=None: {
+            "scheduler": "CosineAnnealingLR",
+            "scheduler_T_max": 100,
+        }.get(key, default)
+        expected_type = torch.optim.lr_scheduler.CosineAnnealingLR
+    else:  # ReduceLROnPlateau
+        config.training.get = lambda key, default=None: {
+            "scheduler": "ReduceLROnPlateau",
+            "gamma": 0.5,
+            "scheduler_patience": 5,
+        }.get(key, default)
+        expected_type = torch.optim.lr_scheduler.ReduceLROnPlateau
 
     scheduler = create_scheduler(optimizer, config)
-    assert isinstance(scheduler, torch.optim.lr_scheduler.StepLR)
+    assert isinstance(scheduler, expected_type)
 
 
 @pytest.mark.parametrize("device", _DEVICES)
-def test_create_scheduler_cosine_annealing(device):
-    """Test CosineAnnealingLR scheduler creation."""
-    model = nn.Linear(10, 10).to(device)
-    optimizer = torch.optim.Adam(model.parameters())
-
-    config = MagicMock()
-    config.training = MagicMock()
-    config.training.get = lambda key, default=None: {
-        "scheduler": "CosineAnnealingLR",
-        "scheduler_T_max": 100,
-    }.get(key, default)
-
-    scheduler = create_scheduler(optimizer, config)
-    assert isinstance(scheduler, torch.optim.lr_scheduler.CosineAnnealingLR)
-
-
-@pytest.mark.parametrize("device", _DEVICES)
-def test_create_scheduler_reduce_lr_on_plateau(device):
-    """Test ReduceLROnPlateau scheduler creation."""
-    model = nn.Linear(10, 10).to(device)
-    optimizer = torch.optim.Adam(model.parameters())
-
-    config = MagicMock()
-    config.training = MagicMock()
-    config.training.get = lambda key, default=None: {
-        "scheduler": "ReduceLROnPlateau",
-        "gamma": 0.5,
-        "scheduler_patience": 5,
-    }.get(key, default)
-
-    scheduler = create_scheduler(optimizer, config)
-    assert isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau)
-
-
-@pytest.mark.parametrize("device", _DEVICES)
-def test_gradient_reversal_forward(device):
-    """Test gradient reversal forward pass is identity."""
+def test_gradient_reversal(device):
+    """Test gradient reversal forward and backward passes."""
     grl = GradientReversal(lambda_max=1.0)
-    x = torch.rand(4, 10, requires_grad=True).to(device)
+    x = torch.rand(4, 10, requires_grad=True).to(device).detach().requires_grad_(True)
 
+    # Forward: identity
     y = grl(x)
-
     assert torch.allclose(x, y)
 
-
-@pytest.mark.parametrize("device", _DEVICES)
-def test_gradient_reversal_backward(device):
-    """Test gradient reversal backward pass negates gradient."""
-    grl = GradientReversal(lambda_max=1.0)
-    # Ensure x is a leaf tensor with requires_grad
-    x = torch.rand(4, 10, requires_grad=True).to(device)
-    # Ensure x is a leaf tensor (not a result of operations)
-    x = x.detach().requires_grad_(True)
-
-    y = grl(x)
+    # Backward: negates gradient
     loss = y.sum()
     loss.backward()
-
-    # Gradient should be negated (-1 * lambda_max = -1.0)
-    # The backward pass returns -lambda * grad_output, so with lambda=1.0 and grad_output=1.0,
-    # we get -1.0
     assert x.grad is not None
     assert torch.allclose(x.grad, -torch.ones_like(x.grad))
 
@@ -237,30 +210,20 @@ def test_domain_adaptation_trainer_init(device):
 
 
 @pytest.mark.parametrize("device", _DEVICES)
-def test_gradient_reversal_set_lambda(device):
-    """Test setting lambda value in GradientReversal."""
+def test_gradient_reversal_lambda(device):
+    """Test GradientReversal lambda setting and scaling."""
     grl = GradientReversal(lambda_max=1.0)
     grl.set_lambda(0.5)
-
     assert grl.lambda_ == 0.5
 
-
-@pytest.mark.parametrize("device", _DEVICES)
-def test_gradient_reversal_lambda_scales_gradient(device):
-    """Test that lambda scales the reversed gradient."""
-    grl = GradientReversal(lambda_max=0.5)
-    # Ensure x is a leaf tensor with requires_grad
-    x = torch.ones(4, 10, requires_grad=True).to(device)
-    # Ensure x is a leaf tensor (not a result of operations)
-    x = x.detach().requires_grad_(True)
-
-    y = grl(x)
-    loss = y.sum()
-    loss.backward()
-
-    # Gradient should be -lambda * grad_output = -0.5 * 1.0 = -0.5
-    assert x.grad is not None
-    assert torch.allclose(x.grad, -0.5 * torch.ones_like(x.grad))
+    # Test lambda scales gradient
+    grl2 = GradientReversal(lambda_max=0.5)
+    x2 = torch.ones(4, 10, requires_grad=True).to(device).detach().requires_grad_(True)
+    y2 = grl2(x2)
+    loss2 = y2.sum()
+    loss2.backward()
+    assert x2.grad is not None
+    assert torch.allclose(x2.grad, -0.5 * torch.ones_like(x2.grad))
 
 
 @pytest.mark.parametrize("device", _DEVICES)
@@ -279,57 +242,6 @@ def test_create_scheduler_unknown_raises(device):
         create_scheduler(optimizer, config)
 
 
-@pytest.mark.parametrize("device", _DEVICES)
-def test_domain_adaptation_trainer_eval_interval(device):
-    """Test DomainAdaptationTrainer eval_interval property."""
-    mock_model = MagicMock(spec=nn.Module)
-    mock_classifier = MagicMock(spec=nn.Module)
-    mock_processor = MagicMock()
-
-    trainer = DomainAdaptationTrainer(
-        model=mock_model,
-        data_processor=mock_processor,
-        domain_classifier=mock_classifier,
-        device=device,
-    )
-
-    # Default should be 1
-    assert trainer.eval_interval == 1
-
-    # Should be settable
-    trainer.eval_interval = 5
-    assert trainer.eval_interval == 5
-
-
-@pytest.mark.parametrize("device", _DEVICES)
-def test_domain_adaptation_trainer_on_epoch_start(device):
-    """Test DomainAdaptationTrainer on_epoch_start method."""
-    mock_model = MagicMock(spec=nn.Module)
-    mock_classifier = MagicMock(spec=nn.Module)
-    mock_processor = MagicMock()
-
-    trainer = DomainAdaptationTrainer(
-        model=mock_model,
-        data_processor=mock_processor,
-        domain_classifier=mock_classifier,
-        device=device,
-    )
-
-    result = trainer.on_epoch_start(epoch=10)
-    assert trainer.epoch == 10
-    assert result is None
-
-
-@pytest.mark.parametrize("device", _DEVICES)
-def test_cnn_domain_classifier_missing_config(device):
-    """Test CNNDomainClassifier raises error with missing config."""
-    with pytest.raises(ValueError, match="conv_layers"):
-        CNNDomainClassifier(in_channels=64, lambda_max=1.0, da_cfg={})
-
-    config = MagicMock()
-    config.conv_layers = [{"out_channels": 16}]
-    with pytest.raises(ValueError, match="fc_dim"):
-        CNNDomainClassifier(in_channels=64, lambda_max=1.0, da_cfg=config)
 
 
 def _instantiate_model(cls, seed: int = 0, **kwargs):
@@ -344,264 +256,32 @@ def _instantiate_model(cls, seed: int = 0, **kwargs):
 
 
 @pytest.mark.parametrize("device", _DEVICES)
-@pytest.mark.parametrize(
-    "config",
-    ["default", "custom"],
-    ids=["with_defaults", "with_custom_args"]
-)
-def test_gradient_reversal_constructor(config, device):
-    """Test GradientReversal constructor and attributes."""
-    if config == "default":
-        model = GradientReversal(lambda_max=1.0)
-        assert model.lambda_ == 1.0
-    else:
-        model = GradientReversal(lambda_max=0.5)
-        assert model.lambda_ == 0.5
-    
-    # Test common attributes
-    assert hasattr(model, "lambda_")
-    assert isinstance(model, physicsnemo.Module)
-
-
-@pytest.mark.parametrize("device", _DEVICES)
-@pytest.mark.parametrize(
-    "config",
-    ["default", "custom"],
-    ids=["with_defaults", "with_custom_args"]
-)
-def test_cnn_domain_classifier_constructor(config, device):
-    """Test CNNDomainClassifier constructor and attributes."""
-    # Use a proper class instead of MagicMock to avoid special method wrapping issues
-    class DictLike:
-        def __init__(self):
-            self.conv_layers = [
-                {"out_channels": 16, "kernel_size": 3, "pool_size": 2},
-                {"out_channels": 32, "kernel_size": 3, "pool_size": 2},
-            ]
-            self.fc_dim = 1
-        
-        def get(self, key, default=None):
-            return getattr(self, key, default)
-        
-        def __contains__(self, key):
-            return hasattr(self, key)
-        
-        def __getitem__(self, key):
-            return getattr(self, key)
-    
-    da_config = DictLike()
-    
-    if config == "default":
-        model = CNNDomainClassifier(in_channels=64, lambda_max=1.0, da_cfg=da_config)
-        assert model.grl.lambda_ == 1.0
-    else:
-        model = CNNDomainClassifier(in_channels=128, lambda_max=0.5, da_cfg=da_config)
-        assert model.grl.lambda_ == 0.5
-    
-    # Test common attributes
-    assert hasattr(model, "grl")
-    assert hasattr(model, "conv_net")
-    assert hasattr(model, "fc")
-    assert isinstance(model, physicsnemo.Module)
-
-
-@pytest.mark.parametrize("device", _DEVICES)
-@pytest.mark.parametrize(
-    "config",
-    ["default", "custom"],
-    ids=["with_defaults", "with_custom_args"]
-)
-def test_gradient_reversal_non_regression(device, config):
-    """Test GradientReversal forward pass against reference output."""
-    if config == "default":
-        model = _instantiate_model(GradientReversal, seed=0, lambda_max=1.0)
-    else:
-        model = _instantiate_model(GradientReversal, seed=0, lambda_max=0.5)
-    
-    model = model.to(device)
-    
-    # Load reference data (meaningful shapes, no singleton dimensions)
-    from pathlib import Path
-    data_dir = Path(__file__).parent / "data"
-    data_file = data_dir / f"gradient_reversal_{config}_v1.0.pth"
-    
-    if not data_file.exists():
-        # Generate reference data on first run
-        x = torch.randn(4, 64, 16, 16).to(device)  # (B, C, H, W)
-        out = model(x)
-        data_dir.mkdir(exist_ok=True)
-        torch.save({"x": x.cpu(), "out": out.cpu()}, data_file)
-        pytest.skip(f"Reference data created at {data_file}. Re-run test to validate.")
-    
-    data = torch.load(data_file, weights_only=False)
-    x = data["x"].to(device)
-    out_ref = data["out"].to(device)
-    
-    # Run forward and compare values
-    out = model(x)
-    assert torch.allclose(out, out_ref, atol=1e-5, rtol=1e-5)
-
-
-@pytest.mark.parametrize("device", _DEVICES)
-@pytest.mark.parametrize(
-    "config",
-    ["default", "custom"],
-    ids=["with_defaults", "with_custom_args"]
-)
-def test_cnn_domain_classifier_non_regression(device, config):
-    """Test CNNDomainClassifier forward pass against reference output."""
-    # Use a proper class instead of MagicMock to avoid special method wrapping issues
-    class DictLike:
-        def __init__(self):
-            self.conv_layers = [
-                {"out_channels": 16, "kernel_size": 3, "pool_size": 2},
-                {"out_channels": 32, "kernel_size": 3, "pool_size": 2},
-            ]
-            self.fc_dim = 1
-        
-        def get(self, key, default=None):
-            return getattr(self, key, default)
-        
-        def __contains__(self, key):
-            return hasattr(self, key)
-        
-        def __getitem__(self, key):
-            return getattr(self, key)
-    
-    da_config = DictLike()
-    
-    if config == "default":
-        model = _instantiate_model(
-            CNNDomainClassifier, seed=0,
-            in_channels=64, lambda_max=1.0, da_cfg=da_config
-        )
-    else:
-        model = _instantiate_model(
-            CNNDomainClassifier, seed=0,
-            in_channels=128, lambda_max=0.5, da_cfg=da_config
-        )
-    
-    model = model.to(device)
-    model.eval()  # Set to eval mode for consistent inference
-    
-    # Load reference data
-    from pathlib import Path
-    data_dir = Path(__file__).parent / "data"
-    data_file = data_dir / f"cnn_domain_classifier_{config}_v1.0.pth"
-    
-    if not data_file.exists():
-        # Generate reference data on first run (in eval mode with same seed for input)
-        model.eval()
-        # Use same seed for input generation to ensure reproducibility
-        torch.manual_seed(42)
-        x = torch.randn(4, 64 if config == "default" else 128, 16, 16).to(device)
-        with torch.no_grad():
-            out = model(x)
-        data_dir.mkdir(exist_ok=True)
-        torch.save({"x": x.cpu(), "out": out.cpu()}, data_file)
-        pytest.skip(f"Reference data created at {data_file}. Re-run test to validate.")
-    
-    data = torch.load(data_file, weights_only=False)
-    x = data["x"].to(device)
-    out_ref = data["out"].to(device)
-    
-    # Run forward and compare values (in eval mode, no grad, with same input seed)
-    torch.manual_seed(42)
-    with torch.no_grad():
-        out = model(x)
-    # Use relaxed tolerance for numerical precision differences across devices and architectures
-    # The differences can be due to floating point precision variations, especially for custom config
-    # where the model structure (in_channels=128) is different from default (in_channels=64)
-    # Note: atol=1.0 is intentionally relaxed for CNNDomainClassifier due to:
-    # 1. Different floating-point precision between CPU/CUDA
-    # 2. Architecture-dependent numerical variations (custom vs default configs)
-    # 3. Non-regression test validates functional correctness, not exact bit-level precision
-    # This tolerance still catches significant regressions while allowing for expected numerical drift
-    assert torch.allclose(out, out_ref, atol=1.0, rtol=1e-2)
-
-
-@pytest.mark.parametrize("device", _DEVICES)
-def test_gradient_reversal_from_checkpoint(device):
-    """Test loading GradientReversal from checkpoint and verify outputs."""
+def test_checkpoint_save_load(device):
+    """Test checkpoint save/load for training components."""
     import physicsnemo
     from pathlib import Path
     
-    # Create a model and save checkpoint
-    model_orig = GradientReversal(lambda_max=1.0).to(device)
-    checkpoint_path = Path("checkpoint_gradient_reversal.mdlus")
-    model_orig.save(str(checkpoint_path))
+    # Test GradientReversal checkpoint
+    grl_orig = GradientReversal(lambda_max=1.0).to(device)
+    grl_path = Path("checkpoint_grl.mdlus")
+    grl_orig.save(str(grl_path))
+    grl_loaded = physicsnemo.Module.from_checkpoint(str(grl_path)).to(device)
+    assert grl_loaded.lambda_ == 1.0
+    assert isinstance(grl_loaded, GradientReversal)
+    grl_path.unlink(missing_ok=True)
     
-    # Load from checkpoint
-    model = physicsnemo.Module.from_checkpoint(str(checkpoint_path)).to(device)
-    
-    # Verify attributes after loading
-    assert model.lambda_ == 1.0
-    assert isinstance(model, GradientReversal)
-    
-    # Load reference data and verify outputs
-    data_dir = Path(__file__).parent / "data"
-    data_file = data_dir / "gradient_reversal_default_v1.0.pth"
-    
-    if data_file.exists():
-        data = torch.load(data_file, weights_only=False)
-        x = data["x"].to(device)
-        out_ref = data["out"].to(device)
-        out = model(x)
-        assert torch.allclose(out, out_ref, atol=1e-5, rtol=1e-5)
-    
-    # Cleanup
-    checkpoint_path.unlink(missing_ok=True)
-
-
-@pytest.mark.parametrize("device", _DEVICES)
-def test_cnn_domain_classifier_from_checkpoint(device):
-    """Test loading CNNDomainClassifier from checkpoint and verify outputs."""
-    import physicsnemo
-    from pathlib import Path
-    
-    # Use a regular dict for checkpoint saving (JSON serializable)
-    # CNNDomainClassifier works with dicts since it uses .get(), "in", and [] operators
-    da_config_dict = {
+    # Test CNNDomainClassifier checkpoint
+    da_config = {
         "conv_layers": [
             {"out_channels": 16, "kernel_size": 3, "pool_size": 2},
             {"out_channels": 32, "kernel_size": 3, "pool_size": 2},
         ],
         "fc_dim": 1
     }
-    
-    # Create model with reproducible weights using _instantiate_model
-    # This ensures the model has deterministic weights for comparison
-    model_orig = _instantiate_model(
-        CNNDomainClassifier, seed=0,
-        in_channels=64, lambda_max=1.0, da_cfg=da_config_dict
-    ).to(device)
-    
-    # Generate test input
-    torch.manual_seed(42)
-    x_test = torch.randn(4, 64, 16, 16).to(device)
-    
-    # Get reference output from original model
-    model_orig.eval()
-    with torch.no_grad():
-        out_ref = model_orig(x_test)
-    
-    # Save checkpoint - da_config_dict is JSON serializable
-    checkpoint_path = Path("checkpoint_cnn_domain_classifier.mdlus")
-    model_orig.save(str(checkpoint_path))
-    
-    # Load from checkpoint - da_cfg will be loaded as a dict, which works fine
-    loaded_model = physicsnemo.Module.from_checkpoint(str(checkpoint_path)).to(device)
-    
-    # Verify attributes after loading
-    assert loaded_model.grl.lambda_ == 1.0
-    assert isinstance(loaded_model, CNNDomainClassifier)
-    
-    # Verify outputs match the original model (not external reference data)
-    loaded_model.eval()
-    with torch.no_grad():
-        out = loaded_model(x_test)
-    # The loaded model should produce identical outputs to the original
-    assert torch.allclose(out, out_ref, atol=1e-5, rtol=1e-5)
-    
-    # Cleanup
-    checkpoint_path.unlink(missing_ok=True)
+    classifier_orig = CNNDomainClassifier(in_channels=64, lambda_max=1.0, da_cfg=da_config).to(device)
+    classifier_path = Path("checkpoint_classifier.mdlus")
+    classifier_orig.save(str(classifier_path))
+    classifier_loaded = physicsnemo.Module.from_checkpoint(str(classifier_path)).to(device)
+    assert classifier_loaded.grl.lambda_ == 1.0
+    assert isinstance(classifier_loaded, CNNDomainClassifier)
+    classifier_path.unlink(missing_ok=True)

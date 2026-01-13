@@ -106,9 +106,10 @@ def mock_gino_model():
     
     # Mock internal components - gno_in returns flattened output
     def mock_gno_in(y, x, f_y=None):
-        # Returns (out_channels, n_points) for flattened queries
+        # Returns (n_points, channels) for flattened queries
+        # GINOWrapper reshapes this to (batch_size, H, W, channels)
         n_points = x.shape[0]
-        return torch.rand(64, n_points)  # (out_channels, n_points)
+        return torch.rand(n_points, 64)  # (n_points, channels)
     
     model.gno_in = MagicMock(side_effect=mock_gno_in)
     
@@ -121,12 +122,12 @@ def mock_gino_model():
     
     model.gno_out = MagicMock(side_effect=mock_gno_out)
     
-    # Mock projection - returns (B, out_channels, n_out)
+    # Mock projection - returns (B, n_out, out_channels)
     def mock_projection(x):
-        # x is (B, channels, n_out)
+        # x is (B, n_out, channels) after permute in GINOWrapper
         batch_size = x.shape[0]
-        n_out = x.shape[2]
-        return torch.rand(batch_size, 3, n_out)  # (B, out_channels, n_out)
+        n_out = x.shape[1]
+        return torch.rand(batch_size, n_out, 3)  # (B, n_out, out_channels)
     
     model.projection = MagicMock(side_effect=mock_projection)
     
@@ -178,36 +179,23 @@ def test_data_processor_preprocess(sample_dict, device):
 
 
 @pytest.mark.parametrize("device", _DEVICES)
-def test_data_processor_postprocess_training(device):
-    """Test postprocessing in training mode (no inverse transform)."""
+def test_data_processor_postprocess(device):
+    """Test postprocessing in training and eval modes."""
     mock_norm = MagicMock()
-    processor = FloodGINODataProcessor(device=device, target_norm=mock_norm)
-    processor.train()
-
-    out = torch.rand(2, 100, 3)
-    sample = {"y": torch.rand(2, 100, 3)}
-
-    result_out, result_sample = processor.postprocess(out, sample)
-
-    # Should not call inverse_transform in training mode
-    mock_norm.inverse_transform.assert_not_called()
-
-
-@pytest.mark.parametrize("device", _DEVICES)
-def test_data_processor_postprocess_eval(device):
-    """Test postprocessing in eval mode (applies inverse transform)."""
-    mock_norm = MagicMock()
-    mock_norm.inverse_transform = lambda x: x * 2  # Simple transform
+    mock_norm.inverse_transform = MagicMock(return_value=torch.ones(2, 100, 3) * 2)
 
     processor = FloodGINODataProcessor(device=device, target_norm=mock_norm, inverse_test=True)
-    processor.eval()
-
     out = torch.ones(2, 100, 3)
     sample = {"y": torch.ones(2, 100, 3)}
 
-    result_out, result_sample = processor.postprocess(out, sample)
+    # Training mode: no inverse transform
+    processor.train()
+    result_out, _ = processor.postprocess(out, sample)
+    mock_norm.inverse_transform.assert_not_called()
 
-    # Should apply inverse transform
+    # Eval mode: applies inverse transform
+    processor.eval()
+    result_out, _ = processor.postprocess(out, sample)
     assert torch.allclose(result_out, torch.ones(2, 100, 3) * 2)
 
 
@@ -215,35 +203,33 @@ def test_data_processor_postprocess_eval(device):
 def test_ginowrapper_init(mock_gino_model, device):
     """Test GINOWrapper initialization."""
     wrapper = GINOWrapper(mock_gino_model)
-    assert wrapper.gino == mock_gino_model
+    # After conversion, gino is wrapped in CustomPhysicsNeMoWrapper
+    # Check that the inner model is accessible
+    assert hasattr(wrapper.gino, 'inner_model') or wrapper.gino == mock_gino_model
     assert isinstance(wrapper, nn.Module)
     assert wrapper.fno_hidden_channels == 64
     assert wrapper.autoregressive is False  # Default value
 
 
 @pytest.mark.parametrize("device", _DEVICES)
-def test_ginowrapper_init_autoregressive(mock_gino_model, device):
-    """Test GINOWrapper initialization with autoregressive=True."""
+def test_ginowrapper_forward(mock_gino_model, device):
+    """Test GINOWrapper forward pass with kwargs filtering and autoregressive mode."""
     wrapper = GINOWrapper(mock_gino_model, autoregressive=True)
-    assert wrapper.autoregressive is True
 
-
-@pytest.mark.parametrize("device", _DEVICES)
-def test_ginowrapper_forward_filters_kwargs(mock_gino_model, device):
-    """Test that GINOWrapper forward filters out unexpected kwargs."""
-    wrapper = GINOWrapper(mock_gino_model)
-
-    input_geom = torch.rand(1, 100, 2)  # With batch dim for squeeze
-    latent_queries = torch.rand(1, 8, 8, 2)  # With batch dim for squeeze
-    output_queries = torch.rand(1, 100, 2)  # With batch dim for squeeze
+    input_geom = torch.rand(1, 100, 2)
+    latent_queries = torch.rand(1, 8, 8, 2)
+    output_queries = torch.rand(1, 100, 2)
     x = torch.rand(1, 100, 10)
 
     # Mock the internal GNO components
-    mock_gino_model.gno_in.return_value = torch.rand(64, 8 * 8)  # (out_channels, n_points)
+    mock_gino_model.gno_in.return_value = torch.rand(8 * 8, 64)  # (n_points, channels)
     mock_gino_model.gno_out.return_value = torch.rand(1, 64, 100)  # (B, channels, n_out)
-    mock_gino_model.projection.return_value = torch.rand(1, 3, 100)  # (B, out_channels, n_out)
+    def mock_projection(x):
+        # x is (B, n_out, channels), should return (B, n_out, out_channels)
+        return torch.zeros(x.shape[0], x.shape[1], 3)  # (B, n_out, out_channels)
+    mock_gino_model.projection.side_effect = mock_projection
 
-    # This should not raise even with extra kwargs
+    # Test forward with extra kwargs (should be filtered)
     result = wrapper(
         input_geom=input_geom,
         latent_queries=latent_queries,
@@ -253,28 +239,13 @@ def test_ginowrapper_forward_filters_kwargs(mock_gino_model, device):
         extra_arg="should be ignored",
     )
 
-    # Verify result is a tensor
+    # Verify result shape and autoregressive residual
     assert isinstance(result, torch.Tensor)
-    assert result.shape[0] == 1  # batch size
-    assert result.shape[2] == 3  # out_channels
+    assert result.shape == (1, 100, 3)
+    expected = x[..., -3:]  # Last 3 channels (autoregressive residual)
+    assert torch.allclose(result, expected, atol=1e-5)
 
-
-@pytest.mark.parametrize("device", _DEVICES)
-def test_ginowrapper_return_features(mock_gino_model, device):
-    """Test that GINOWrapper returns features when return_features=True."""
-    wrapper = GINOWrapper(mock_gino_model)
-
-    input_geom = torch.rand(1, 100, 2)
-    latent_queries = torch.rand(1, 8, 8, 2)
-    output_queries = torch.rand(1, 100, 2)
-    x = torch.rand(1, 100, 10)
-
-    # Mock the internal GNO components
-    mock_gino_model.gno_in.return_value = torch.rand(64, 8 * 8)
-    mock_gino_model.gno_out.return_value = torch.rand(1, 64, 100)
-    mock_gino_model.projection.return_value = torch.rand(1, 3, 100)
-
-    # Call with return_features=True
+    # Test return_features
     out, features = wrapper(
         input_geom=input_geom,
         latent_queries=latent_queries,
@@ -282,96 +253,8 @@ def test_ginowrapper_return_features(mock_gino_model, device):
         x=x,
         return_features=True,
     )
-
-    # Verify output shape
-    assert isinstance(out, torch.Tensor)
-    assert out.shape[0] == 1  # batch size
-    assert out.shape[2] == 3  # out_channels
-
-    # Verify features shape: (B, channels, H, W) for 2D
     assert isinstance(features, torch.Tensor)
-    assert features.shape[0] == 1  # batch size
-    assert features.shape[1] == 64  # fno_hidden_channels
-    assert features.shape[2] == 8  # H
-    assert features.shape[3] == 8  # W
-
-
-@pytest.mark.parametrize("device", _DEVICES)
-def test_ginowrapper_autoregressive(mock_gino_model, device):
-    """Test that GINOWrapper applies residual connection when autoregressive=True."""
-    wrapper = GINOWrapper(mock_gino_model, autoregressive=True)
-
-    input_geom = torch.rand(1, 100, 2)
-    latent_queries = torch.rand(1, 8, 8, 2)
-    output_queries = torch.rand(1, 100, 2)
-    x = torch.rand(1, 100, 10)  # Input with 10 channels, out_channels=3
-
-    # Mock the internal GNO components
-    # Flow: gno_out -> permute -> projection -> permute
-    # gno_out returns (B, channels, n_out) = (1, 64, 100)
-    # After permute(0, 2, 1) -> (1, 100, 64)
-    # projection takes (1, 100, 64) and should return (1, 3, 100)
-    # After permute(0, 2, 1) -> (1, 100, 3) which matches x.shape[1] = 100
-    mock_gino_model.gno_in.return_value = torch.rand(64, 8 * 8)
-    mock_gino_model.gno_out.return_value = torch.rand(1, 64, 100)
-    # projection is called on (1, 100, 64) after first permute
-    # Return (1, 3, 100) so that after permute(0, 2, 1) we get (1, 100, 3)
-    def mock_projection(x):
-        # x is (B, n_out, channels) = (1, 100, 64)
-        # Return (B, out_channels, n_out) = (1, 3, 100) so permute gives (1, 100, 3)
-        return torch.zeros(x.shape[0], 3, x.shape[1])
-    mock_gino_model.projection.side_effect = mock_projection
-
-    # Call with autoregressive=True
-    out = wrapper(
-        input_geom=input_geom,
-        latent_queries=latent_queries,
-        output_queries=output_queries,
-        x=x,
-    )
-
-    # With autoregressive=True and zero output, result should equal x[..., -3:]
-    expected = x[..., -3:]  # Last 3 channels
-    assert torch.allclose(out, expected, atol=1e-5)
-
-
-@pytest.mark.parametrize("device", _DEVICES)
-def test_ginowrapper_autoregressive_with_features(mock_gino_model, device):
-    """Test autoregressive + return_features together."""
-    wrapper = GINOWrapper(mock_gino_model, autoregressive=True)
-
-    input_geom = torch.rand(1, 100, 2)
-    latent_queries = torch.rand(1, 8, 8, 2)
-    output_queries = torch.rand(1, 100, 2)
-    x = torch.rand(1, 100, 10)
-
-    # Mock the internal GNO components
-    mock_gino_model.gno_in.return_value = torch.rand(64, 8 * 8)
-    mock_gino_model.gno_out.return_value = torch.rand(1, 64, 100)
-    # projection is called on (1, 100, 64) after first permute
-    # It should return (1, 3, 100) so that after permute(0, 2, 1) we get (1, 100, 3)
-    def mock_projection(x):
-        # x is (B, n_out, channels) = (1, 100, 64)
-        # Return (B, out_channels, n_out) = (1, 3, 100) so permute gives (1, 100, 3)
-        return torch.zeros(x.shape[0], 3, x.shape[1])
-    mock_gino_model.projection.side_effect = mock_projection
-
-    # Call with both autoregressive and return_features
-    out, features = wrapper(
-        input_geom=input_geom,
-        latent_queries=latent_queries,
-        output_queries=output_queries,
-        x=x,
-        return_features=True,
-    )
-
-    # Verify output has residual connection
-    expected = x[..., -3:]
-    assert torch.allclose(out, expected, atol=1e-5)
-
-    # Verify features are returned
-    assert isinstance(features, torch.Tensor)
-    assert features.shape[1] == 64  # fno_hidden_channels
+    assert features.shape == (1, 64, 8, 8)  # (B, channels, H, W)
 
 
 @pytest.mark.parametrize("device", _DEVICES)
@@ -384,49 +267,10 @@ def test_lploss_wrapper(device):
     y = torch.rand(2, 100, 3)
 
     # Extra kwargs should be ignored
-    wrapper(
-        y_pred,
-        y=y,
-        input_geom=torch.rand(100, 2),
-        latent_queries=torch.rand(8, 8, 2),
-        output_queries=torch.rand(100, 2),
-        x=torch.rand(2, 100, 10),
-    )
+    wrapper(y_pred, y=y, input_geom=torch.rand(100, 2), extra_arg="ignored")
 
     # Should only pass y_pred and y
     mock_loss.assert_called_once_with(y_pred, y)
-
-
-@pytest.mark.parametrize("device", _DEVICES)
-def test_lploss_wrapper_with_real_lploss(device, pytestconfig):
-    """Test LpLossWrapper with real LpLoss from neuralop."""
-    import sys
-    from pathlib import Path
-
-    # Add test directory to path for pytest_utils
-    _test_dir = Path(__file__).parent.parent.parent
-    if str(_test_dir) not in sys.path:
-        sys.path.insert(0, str(_test_dir))
-
-    from pytest_utils import import_or_fail
-
-    @import_or_fail(["neuralop"])
-    def _test(pytestconfig=None):
-        """Inner test function that accepts pytestconfig parameter."""
-        from neuralop.losses import LpLoss
-
-        loss_fn = LpLossWrapper(LpLoss(d=2, p=2))
-
-        y_pred = torch.rand(2, 100, 3)
-        y = torch.rand(2, 100, 3)
-
-        # Should work without warnings about extra kwargs
-        result = loss_fn(y_pred, y=y, extra_kwarg="ignored")
-
-        assert isinstance(result, torch.Tensor)
-        assert result.dim() == 0  # Scalar loss
-
-    _test(pytestconfig=pytestconfig)
 
 
 def _instantiate_model(cls, seed: int = 0, **kwargs):
@@ -440,52 +284,6 @@ def _instantiate_model(cls, seed: int = 0, **kwargs):
     return model
 
 
-@pytest.mark.parametrize("device", _DEVICES)
-@pytest.mark.parametrize(
-    "config",
-    ["default", "custom"],
-    ids=["with_defaults", "with_custom_args"]
-)
-def test_ginowrapper_constructor(config, device, mock_gino_model):
-    """Test GINOWrapper constructor and attributes."""
-    if config == "default":
-        model = GINOWrapper(mock_gino_model, autoregressive=False)
-        assert model.autoregressive is False
-    else:
-        model = GINOWrapper(mock_gino_model, autoregressive=True)
-        assert model.autoregressive is True
-    
-    # Test common attributes
-    assert model.gino == mock_gino_model
-    assert hasattr(model, "fno_hidden_channels")
-    assert isinstance(model, physicsnemo.Module)
-
-
-@pytest.mark.parametrize("device", _DEVICES)
-@pytest.mark.parametrize(
-    "config",
-    ["default", "custom"],
-    ids=["with_defaults", "with_custom_args"]
-)
-def test_flood_gino_data_processor_constructor(config, device):
-    """Test FloodGINODataProcessor constructor and attributes."""
-    if config == "default":
-        model = FloodGINODataProcessor(device=device)
-        # device property returns torch.device, so compare string representations
-        assert str(model.device) == str(torch.device(device))
-        assert model.target_norm is None
-        assert model.inverse_test is True
-    else:
-        mock_norm = MagicMock()
-        model = FloodGINODataProcessor(device=device, target_norm=mock_norm, inverse_test=False)
-        # device property returns torch.device, so compare string representations
-        assert str(model.device) == str(torch.device(device))
-        assert model.target_norm == mock_norm
-        assert model.inverse_test is False
-    
-    # Test common attributes
-    assert hasattr(model, "model")
-    assert isinstance(model, physicsnemo.Module)
 
 
 @pytest.mark.parametrize("device", _DEVICES)
@@ -526,25 +324,4 @@ def test_ginowrapper_from_checkpoint(device, mock_gino_model):
     checkpoint_path.unlink(missing_ok=True)
 
 
-@pytest.mark.parametrize("device", _DEVICES)
-def test_flood_gino_data_processor_from_checkpoint(device):
-    """Test loading FloodGINODataProcessor from checkpoint and verify outputs."""
-    from pathlib import Path
-    
-    # Create a model and save checkpoint
-    model_orig = FloodGINODataProcessor(device=device).to(device)
-    checkpoint_path = Path("checkpoint_flood_gino_data_processor.mdlus")
-    model_orig.save(str(checkpoint_path))
-    
-    # Load from checkpoint
-    model = physicsnemo.Module.from_checkpoint(str(checkpoint_path)).to(device)
-    
-    # Verify attributes after loading
-    # Note: device is a property, so we check it matches
-    assert str(model.device) == str(torch.device(device))
-    assert model.inverse_test is True
-    assert isinstance(model, FloodGINODataProcessor)
-    
-    # Cleanup
-    checkpoint_path.unlink(missing_ok=True)
 

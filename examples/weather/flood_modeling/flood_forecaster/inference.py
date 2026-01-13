@@ -30,10 +30,10 @@ from hydra.utils import to_absolute_path
 from omegaconf import DictConfig, OmegaConf
 
 from neuralop import get_model
-from neuralop.training.training_state import load_training_state
 
 from physicsnemo.distributed.manager import DistributedManager
 from physicsnemo.launch.logging import PythonLogger, RankZeroLoggingWrapper
+from physicsnemo.launch.utils.checkpoint import load_checkpoint
 
 from datasets import FloodRolloutTestDatasetNew, NormalizedRolloutTestDataset
 from data_processing import FloodGINODataProcessor, GINOWrapper
@@ -122,33 +122,74 @@ def run_inference(cfg: DictConfig) -> None:
         gino_model = get_model(wrapper_config)
         gino_model = gino_model.to(device)
 
-        # Load checkpoint into the underlying GINO model first
-        # The checkpoint was saved from the GINO model (not the wrapper), so we need to
-        # load it into the raw GINO model, then wrap it
-        if (checkpoint_path / "best_model_state_dict.pt").exists():
-            save_name = "best_model"
-        elif (checkpoint_path / "model_state_dict.pt").exists():
-            save_name = "model"
-        else:
-            log_rank_zero.error(f"No checkpoint found in {checkpoint_path}")
-            sys.exit(1)
-
-        # Load checkpoint into the underlying GINO model
-        gino_model, _, _, _, _ = load_training_state(
-            save_dir=checkpoint_path,
-            save_name=save_name,
-            model=gino_model,
-            optimizer=None,
-            scheduler=None,
-        )
-        log_rank_zero.info(f"Loaded checkpoint: {save_name}")
-
-        # Now wrap the loaded model with GINOWrapper
         # Optionally enable autoregressive residual connection if specified in config
         autoregressive = False
         if hasattr(cfg, "model") and hasattr(cfg.model, "autoregressive"):
             autoregressive = cfg.model.autoregressive
+        
+        # Create GINOWrapper first (checkpoints are saved as GINOWrapper in PhysicsNeMo format)
         model = GINOWrapper(gino_model, autoregressive=autoregressive)
+        model = model.to(device)
+
+        # Load checkpoint into the model
+        # Support both PhysicsNeMo format (new) and neuralop format (old) for backward compatibility
+        checkpoint_loaded = False
+        
+        # Try PhysicsNeMo format first (new format)
+        # Checkpoints are saved as GINOWrapper (PhysicsNeMo Module), so we load into the wrapper
+        try:
+            metadata_dict = {}
+            load_checkpoint(
+                path=str(checkpoint_path),
+                models=model,  # Load into GINOWrapper (PhysicsNeMo Module)
+                optimizer=None,
+                scheduler=None,
+                scaler=None,
+                epoch=None,  # Load latest checkpoint
+                metadata_dict=metadata_dict,
+                device=device,
+            )
+            log_rank_zero.info("Loaded checkpoint using PhysicsNeMo format")
+            checkpoint_loaded = True
+        except (FileNotFoundError, KeyError, ValueError) as e:
+            # Fall back to neuralop format (old format)
+            log_rank_zero.info(f"PhysicsNeMo checkpoint not found, trying neuralop format: {e}")
+            
+        # Try neuralop format (old format) if PhysicsNeMo format failed
+        # For old format, we need to load into the inner gino_model, not the wrapper
+        if not checkpoint_loaded:
+            try:
+                from neuralop.training.training_state import load_training_state
+                
+                # Check for neuralop checkpoint files
+                if (checkpoint_path / "best_model_state_dict.pt").exists():
+                    save_name = "best_model"
+                elif (checkpoint_path / "model_state_dict.pt").exists():
+                    save_name = "model"
+                else:
+                    log_rank_zero.error(f"No checkpoint found in {checkpoint_path}")
+                    log_rank_zero.error("Tried both PhysicsNeMo and neuralop formats")
+                    sys.exit(1)
+
+                # Load checkpoint using neuralop format into the inner model
+                # Extract the inner model from GINOWrapper for loading
+                inner_model = model.model if hasattr(model, 'model') else gino_model
+                inner_model, _, _, _, _ = load_training_state(
+                    save_dir=checkpoint_path,
+                    save_name=save_name,
+                    model=inner_model,
+                    optimizer=None,
+                    scheduler=None,
+                )
+                log_rank_zero.info(f"Loaded checkpoint using neuralop format: {save_name}")
+                checkpoint_loaded = True
+            except Exception as e:
+                log_rank_zero.error(f"Failed to load checkpoint in both formats: {e}")
+                sys.exit(1)
+        
+        if not checkpoint_loaded:
+            log_rank_zero.error("Failed to load checkpoint in any format")
+            sys.exit(1)
 
         # Load normalizers from checkpoint if available
         # Normalizers are saved in both pretrain and adapt folders, so check both locations

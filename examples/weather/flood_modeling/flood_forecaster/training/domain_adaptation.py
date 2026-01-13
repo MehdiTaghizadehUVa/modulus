@@ -45,10 +45,58 @@ from tqdm import tqdm
 
 from neuralop.training import AdamW
 from neuralop.losses import LpLoss
-from neuralop.training.training_state import save_training_state, load_training_state
 
 import physicsnemo
 from physicsnemo.models.meta import ModelMetaData
+from physicsnemo.distributed import DistributedManager
+from physicsnemo.launch.utils.checkpoint import save_checkpoint, load_checkpoint
+
+
+def _sanitize_args_for_json(args_dict: Dict[str, Any]) -> Dict[str, Any]:
+    r"""
+    Recursively convert non-JSON-serializable objects in args_dict to serializable formats.
+    
+    This function handles:
+    - DictConfig -> dict (using OmegaConf.to_container)
+    - Other non-serializable objects are left as-is (will cause error if encountered)
+    
+    Parameters
+    ----------
+    args_dict : Dict[str, Any]
+        Dictionary to sanitize (modified in-place).
+    
+    Returns
+    -------
+    Dict[str, Any]
+        Sanitized dictionary (same object, modified in-place).
+    """
+    try:
+        from omegaconf import DictConfig, OmegaConf
+        has_omegaconf = True
+    except ImportError:
+        has_omegaconf = False
+    
+    def _convert_value(value: Any) -> Any:
+        """Recursively convert DictConfig objects to dicts."""
+        if has_omegaconf and isinstance(value, DictConfig):
+            # Convert DictConfig to dict, resolving nested DictConfigs
+            return OmegaConf.to_container(value, resolve=True)
+        elif isinstance(value, dict):
+            # Recursively process dictionary values
+            return {k: _convert_value(v) for k, v in value.items()}
+        elif isinstance(value, (list, tuple)):
+            # Recursively process list/tuple elements
+            converted = [_convert_value(item) for item in value]
+            return type(value)(converted)  # Preserve list/tuple type
+        else:
+            # Other types (int, float, str, bool, None) are already JSON-serializable
+            return value
+    
+    # Process the dictionary recursively
+    for key, value in list(args_dict.items()):
+        args_dict[key] = _convert_value(value)
+    
+    return args_dict
 
 from data_processing import LpLossWrapper
 
@@ -68,6 +116,7 @@ except ImportError:
 from datasets import FloodDatasetWithQueryPoints, NormalizedDataset
 from utils.normalization import collect_all_fields, stack_and_fit_transform
 from training.pretraining import create_scheduler
+from training.trainer import save_model_checkpoint, _has_pytorch_submodules
 
 
 class GradientReversalFunction(Function):
@@ -265,7 +314,35 @@ class CNNDomainClassifier(physicsnemo.Module):
         ValueError
             If required keys are missing from ``da_cfg`` or if conv_layers is empty.
         """
+        # Convert DictConfig to regular dict if needed (for JSON serialization)
+        # This must be done BEFORE super().__init__() so PhysicsNeMo's __new__ captures
+        # the converted dict, not the DictConfig
+        # OmegaConf.to_container recursively converts nested DictConfigs to dicts
+        try:
+            from omegaconf import DictConfig, OmegaConf
+            if isinstance(da_cfg, DictConfig):
+                # Convert to regular dict, resolving all nested DictConfigs recursively
+                da_cfg = OmegaConf.to_container(da_cfg, resolve=True)
+        except ImportError:
+            # OmegaConf not available, assume da_cfg is already a dict
+            pass
+        except Exception:
+            # If conversion fails for any reason, try to manually convert
+            # This is a fallback in case OmegaConf.to_container doesn't work
+            if hasattr(da_cfg, '__dict__'):
+                # Try to convert manually
+                da_cfg = dict(da_cfg)
+        
         super().__init__(meta=ModelMetaData(name="CNNDomainClassifier"))
+        
+        # CRITICAL: Sanitize _args to convert any DictConfig objects to regular dicts
+        # PhysicsNeMo's __new__ captures arguments before __init__ runs, so _args
+        # may contain DictConfig objects that need to be converted for JSON serialization
+        # We need to sanitize the entire _args structure, not just __args__
+        if hasattr(self, '_args'):
+            # Recursively sanitize the entire _args dictionary
+            # This will convert any DictConfig objects anywhere in the structure
+            _sanitize_args_for_json(self._args)
         if not da_cfg.get("conv_layers"):
             raise ValueError("da_cfg must contain 'conv_layers' list")
         if "fc_dim" not in da_cfg:
@@ -475,13 +552,49 @@ class DomainAdaptationTrainer:
         start_epoch = 0
         if resume_from_dir is not None:
             start_epoch = self._resume_from_checkpoint(resume_from_dir, optimizer, scheduler)
+        
+        # Optionally resume classifier from separate directory (fallback mechanism)
         if resume_classifier_from_dir is not None:
-            ckpt = Path(resume_classifier_from_dir) / "classifier_state_dict.pt"
-            if ckpt.exists():
-                self.domain_classifier.load_state_dict(torch.load(str(ckpt), map_location=self.device))
-                msg = f"Loaded classifier from {ckpt}"
+            classifier_loaded = False
+            resume_classifier_dir = Path(resume_classifier_from_dir)
+            
+            # Try PhysicsNeMo format first (classifier saved as second model)
+            try:
+                metadata_dict = {}
+                load_checkpoint(
+                    path=str(resume_classifier_dir),
+                    models=[self.domain_classifier],
+                    optimizer=None,
+                    scheduler=None,
+                    scaler=None,
+                    epoch=None,  # Load latest
+                    metadata_dict=metadata_dict,
+                    device=self.device,
+                )
+                msg = f"Loaded classifier from PhysicsNeMo checkpoint: {resume_classifier_dir}"
                 if self.logger:
                     self.logger.info(msg)
+                elif self.verbose:
+                    print(msg)
+                classifier_loaded = True
+            except (FileNotFoundError, KeyError, ValueError):
+                # Fall back to old format (separate classifier_state_dict.pt file)
+                ckpt = resume_classifier_dir / "classifier_state_dict.pt"
+                if ckpt.exists():
+                    self.domain_classifier.load_state_dict(
+                        torch.load(str(ckpt), map_location=self.device)
+                    )
+                    msg = f"Loaded classifier from neuralop checkpoint: {ckpt}"
+                    if self.logger:
+                        self.logger.info(msg)
+                    elif self.verbose:
+                        print(msg)
+                    classifier_loaded = True
+            
+            if not classifier_loaded:
+                msg = f"Warning: Could not load classifier from {resume_classifier_from_dir}"
+                if self.logger:
+                    self.logger.warning(msg)
                 elif self.verbose:
                     print(msg)
         
@@ -626,42 +739,114 @@ class DomainAdaptationTrainer:
             if val_loaders and (epoch % self.eval_interval == 0 or epoch == adaptation_epochs - 1):
                 self._evaluate(val_loaders, training_loss, epoch)
             
-            # Optional checkpointing (matches original implementation)
+            # Optional checkpointing using PhysicsNeMo checkpoint system
             if save_every is not None and (epoch % save_every == 0):
-                sd = Path(save_dir)
-                if not _has_comm or comm.get_local_rank() == 0:
+                # Only save on rank 0 in distributed training
+                should_save = True
+                if DistributedManager.is_initialized():
+                    dist_manager = DistributedManager()
+                    should_save = (dist_manager.rank == 0)
+                elif _has_comm:
+                    should_save = (comm.get_local_rank() == 0)
+                
+                if should_save:
+                    sd = Path(save_dir)
                     sd.mkdir(parents=True, exist_ok=True)
-                    save_training_state(
+                    
+                    # Determine model parallel rank
+                    model_parallel_rank = 0
+                    if DistributedManager.is_initialized():
+                        dist_manager = DistributedManager()
+                        if "model_parallel" in dist_manager.group_names:
+                            model_parallel_rank = dist_manager.group_rank("model_parallel")
+                    
+                    # Save model(s) - handle PyTorch submodules if needed
+                    model_to_save = self.model
+                    if isinstance(self.model, torch.nn.parallel.DistributedDataParallel):
+                        model_to_save = self.model.module
+                    
+                    model_saved_separately = save_model_checkpoint(
+                        model=model_to_save,
                         save_dir=sd,
-                        save_name="model",
-                        model=self.model,
+                        epoch=epoch,
+                        model_parallel_rank=model_parallel_rank,
+                    )
+                    
+                    # Prepare models list for PhysicsNeMo (includes domain classifier)
+                    models_to_save = []
+                    if not model_saved_separately:
+                        models_to_save.append(model_to_save)
+                    # Always add domain classifier as second model
+                    models_to_save.append(self.domain_classifier)
+                    
+                    # Save checkpoint with both models and training state
+                    save_checkpoint(
+                        path=str(sd),
+                        models=models_to_save if not model_saved_separately else [self.domain_classifier],
                         optimizer=optimizer,
                         scheduler=scheduler,
-                        regularizer=getattr(self, "regularizer", None),
-                        epoch=epoch
+                        scaler=None,
+                        epoch=epoch,
+                        metadata={"stage": "domain_adaptation", "epoch": epoch},
                     )
-                    torch.save(self.domain_classifier.state_dict(), str(sd / "classifier_state_dict.pt"))
+                    
                     msg = f"Saved DA checkpoint at epoch {epoch}"
                     if self.logger:
                         self.logger.info(msg)
                     elif self.verbose:
                         print(msg)
         
-        # Save final checkpoint (outside epoch loop)
-        if not _has_comm or comm.get_local_rank() == 0:
+        # Save final checkpoint (outside epoch loop) using PhysicsNeMo checkpoint system
+        should_save = True
+        if DistributedManager.is_initialized():
+            dist_manager = DistributedManager()
+            should_save = (dist_manager.rank == 0)
+        elif _has_comm:
+            should_save = (comm.get_local_rank() == 0)
+        
+        if should_save:
             sd = Path(save_dir)
             sd.mkdir(parents=True, exist_ok=True)
-            save_training_state(
+            
+            # Determine model parallel rank
+            model_parallel_rank = 0
+            if DistributedManager.is_initialized():
+                dist_manager = DistributedManager()
+                if "model_parallel" in dist_manager.group_names:
+                    model_parallel_rank = dist_manager.group_rank("model_parallel")
+            
+            # Save model(s) - handle PyTorch submodules if needed
+            model_to_save = self.model
+            if isinstance(self.model, torch.nn.parallel.DistributedDataParallel):
+                model_to_save = self.model.module
+            
+            final_epoch = adaptation_epochs - 1
+            model_saved_separately = save_model_checkpoint(
+                model=model_to_save,
                 save_dir=sd,
-                save_name="model",
-                model=self.model,
+                epoch=final_epoch,
+                model_parallel_rank=model_parallel_rank,
+            )
+            
+            # Prepare models list for PhysicsNeMo (includes domain classifier)
+            models_to_save = []
+            if not model_saved_separately:
+                models_to_save.append(model_to_save)
+            # Always add domain classifier as second model
+            models_to_save.append(self.domain_classifier)
+            
+            # Save checkpoint with both models and training state
+            save_checkpoint(
+                path=str(sd),
+                models=models_to_save if not model_saved_separately else [self.domain_classifier],
                 optimizer=optimizer,
                 scheduler=scheduler,
-                regularizer=getattr(self, "regularizer", None),
-                epoch=adaptation_epochs - 1
+                scaler=None,
+                epoch=final_epoch,
+                metadata={"stage": "domain_adaptation", "final_epoch": True, "epoch": final_epoch},
             )
-            torch.save(self.domain_classifier.state_dict(), str(sd / "classifier_state_dict.pt"))
-            msg = "Saved final DA checkpoint"
+            
+            msg = "Saved final DA checkpoint using PhysicsNeMo format"
             if self.logger:
                 self.logger.info(msg)
             elif self.verbose:
@@ -755,10 +940,10 @@ class DomainAdaptationTrainer:
         save_classifier: bool = False
     ) -> None:
         r"""
-        Save training checkpoint.
+        Save training checkpoint using PhysicsNeMo checkpoint system.
         
-        Note: This method is kept for backward compatibility but checkpointing
-        is now handled directly in train_domain_adaptation to match the original implementation.
+        This method saves both the main model and domain classifier (if requested)
+        using PhysicsNeMo's checkpoint format.
 
         Parameters
         ----------
@@ -774,33 +959,70 @@ class DomainAdaptationTrainer:
             Whether to save classifier state dict.
         """
         save_dir = Path(save_dir)
-        # Only save on rank 0 in distributed training, or always in single-GPU
-        if not _has_comm or comm.get_local_rank() == 0:
-            try:
-                save_dir.mkdir(parents=True, exist_ok=True)
-                save_training_state(
-                    save_dir=save_dir,
-                    save_name="model",
-                    model=self.model,
-                    optimizer=optimizer,
-                    scheduler=scheduler,
-                    regularizer=getattr(self, "regularizer", None),
-                    epoch=epoch
-                )
-                if save_classifier:
-                    torch.save(self.domain_classifier.state_dict(), str(save_dir / "classifier_state_dict.pt"))
-                msg = f"Saved checkpoint to {save_dir}"
-                if self.logger:
-                    self.logger.info(msg)
-                elif self.verbose:
-                    print(msg)
-            except Exception as e:
-                msg = f"Error saving checkpoint to {save_dir}: {e}"
-                if self.logger:
-                    self.logger.error(msg)
-                elif self.verbose:
-                    print(msg)
-                raise
+        
+        # Only save on rank 0 in distributed training
+        should_save = True
+        if DistributedManager.is_initialized():
+            dist_manager = DistributedManager()
+            should_save = (dist_manager.rank == 0)
+        elif _has_comm:
+            should_save = (comm.get_local_rank() == 0)
+        
+        if not should_save:
+            return
+        
+        try:
+            save_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Determine model parallel rank
+            model_parallel_rank = 0
+            if DistributedManager.is_initialized():
+                dist_manager = DistributedManager()
+                if "model_parallel" in dist_manager.group_names:
+                    model_parallel_rank = dist_manager.group_rank("model_parallel")
+            
+            # Save model(s) - handle PyTorch submodules if needed
+            model_to_save = self.model
+            if isinstance(self.model, torch.nn.parallel.DistributedDataParallel):
+                model_to_save = self.model.module
+            
+            model_saved_separately = save_model_checkpoint(
+                model=model_to_save,
+                save_dir=save_dir,
+                epoch=epoch,
+                model_parallel_rank=model_parallel_rank,
+            )
+            
+            # Prepare models list for PhysicsNeMo
+            models_to_save = []
+            if not model_saved_separately:
+                models_to_save.append(model_to_save)
+            if save_classifier:
+                models_to_save.append(self.domain_classifier)
+            
+            # Save checkpoint with models and training state
+            save_checkpoint(
+                path=str(save_dir),
+                models=models_to_save if models_to_save else None,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                scaler=None,
+                epoch=epoch,
+                metadata={"stage": "domain_adaptation", "epoch": epoch},
+            )
+            
+            msg = f"Saved checkpoint to {save_dir}"
+            if self.logger:
+                self.logger.info(msg)
+            elif self.verbose:
+                print(msg)
+        except Exception as e:
+            msg = f"Error saving checkpoint to {save_dir}: {e}"
+            if self.logger:
+                self.logger.error(msg)
+            elif self.verbose:
+                print(msg)
+            raise
     
     def _resume_from_checkpoint(
         self, 
@@ -809,7 +1031,9 @@ class DomainAdaptationTrainer:
         scheduler: Any
     ) -> int:
         r"""
-        Resume training from checkpoint.
+        Resume training from checkpoint using PhysicsNeMo checkpoint system.
+        
+        Supports both PhysicsNeMo format (new) and neuralop format (old) for backward compatibility.
 
         Parameters
         ----------
@@ -834,36 +1058,86 @@ class DomainAdaptationTrainer:
             elif self.verbose:
                 print(msg)
             return 0
-        
-        if (resume_dir / "best_model_state_dict.pt").exists():
-            save_name = "best_model"
-        elif (resume_dir / "model_state_dict.pt").exists():
-            save_name = "model"
-        else:
-            msg = f"No checkpoint found in {resume_dir}"
-            if self.logger:
-                self.logger.warning(msg)
-            elif self.verbose:
-                print(msg)
-            return 0
 
         try:
-            self.model, optimizer, scheduler, _, resume_epoch = load_training_state(
-                save_dir=resume_dir,
-                save_name=save_name,
-                model=self.model,
-                optimizer=optimizer,
-                scheduler=scheduler,
-            )
+            # Try PhysicsNeMo format first (new format)
+            checkpoint_loaded = False
+            resume_epoch = 0
+            metadata_dict = {}
+            
+            try:
+                # Try to load using PhysicsNeMo format
+                # Prepare models list (main model + domain classifier if available)
+                models_to_load = [self.model]
+                if hasattr(self, 'domain_classifier') and self.domain_classifier is not None:
+                    models_to_load.append(self.domain_classifier)
+                
+                resume_epoch = load_checkpoint(
+                    path=str(resume_dir),
+                    models=models_to_load,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    scaler=None,
+                    epoch=None,  # Load latest
+                    metadata_dict=metadata_dict,
+                    device=self.device,
+                )
+                
+                if self.logger:
+                    self.logger.info("Loaded checkpoint using PhysicsNeMo format")
+                checkpoint_loaded = True
+            except (FileNotFoundError, KeyError, ValueError) as e:
+                # Fall back to neuralop format (old format)
+                if self.logger:
+                    self.logger.info(f"PhysicsNeMo checkpoint not found, trying neuralop format: {e}")
+                
+                # Check for neuralop checkpoint files
+                if (resume_dir / "best_model_state_dict.pt").exists():
+                    save_name = "best_model"
+                elif (resume_dir / "model_state_dict.pt").exists():
+                    save_name = "model"
+                else:
+                    msg = f"No checkpoint found in {resume_dir} (tried both formats)"
+                    if self.logger:
+                        self.logger.warning(msg)
+                    elif self.verbose:
+                        print(msg)
+                    return 0
 
-            if resume_epoch is not None:
+                # Load using neuralop format
+                from neuralop.training.training_state import load_training_state
+                
+                self.model, optimizer, scheduler, _, resume_epoch = load_training_state(
+                    save_dir=resume_dir,
+                    save_name=save_name,
+                    model=self.model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                )
+                
+                # Try to load domain classifier if it exists
+                classifier_path = resume_dir / "classifier_state_dict.pt"
+                if classifier_path.exists() and hasattr(self, 'domain_classifier') and self.domain_classifier is not None:
+                    self.domain_classifier.load_state_dict(
+                        torch.load(str(classifier_path), map_location=self.device)
+                    )
+                    if self.logger:
+                        self.logger.info("Loaded domain classifier from neuralop checkpoint")
+                
+                if self.logger:
+                    self.logger.info(f"Loaded checkpoint using neuralop format: {save_name}")
+                checkpoint_loaded = True
+
+            if checkpoint_loaded and resume_epoch is not None:
                 msg = f"Resumed from epoch {resume_epoch}"
                 if self.logger:
                     self.logger.info(msg)
                 elif self.verbose:
                     print(msg)
-
-            return resume_epoch if resume_epoch is not None else 0
+                return resume_epoch
+            else:
+                return 0
+                
         except Exception as e:
             msg = f"Error loading checkpoint from {resume_dir}: {e}"
             if self.logger:

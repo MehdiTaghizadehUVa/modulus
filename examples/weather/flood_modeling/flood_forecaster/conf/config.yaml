@@ -34,7 +34,7 @@ distributed:
 
 # Dataset related for training and one-step evaluation
 source_data:
-  root: "${DATA_ROOT:/path/to/source/data}"  # Set DATA_ROOT environment variable or update this path
+  root: "C:/Users/jrj6wm/Box/Flood_Modeling/Simulations/New_Results"  # Source domain training data path
   resolution: 48  # Spatial resolution of the dataset (integer)
   n_history: 3  # Number of historical time steps to use as input (integer)
   batch_size: 8  # Batch size for training (integer)
@@ -65,7 +65,7 @@ source_data:
 
 # Target domain dataset
 target_data:
-  root: "${TARGET_DATA_ROOT:/path/to/target/data}"  # Set TARGET_DATA_ROOT environment variable or update this path
+  root: "C:/Users/jrj6wm/Box/Flood_Modeling/Simulations/New_Results"  # Target domain training data path (can be same as source or different)
   resolution: 48  # Spatial resolution of the dataset (integer)
   n_history: 3  # Number of historical time steps to use as input (integer)
   batch_size: 8  # Batch size for domain adaptation training (integer)
@@ -96,7 +96,7 @@ target_data:
 
 # Rollout evaluation dataset
 rollout_data:
-  root: "${ROLLOUT_DATA_ROOT:/path/to/rollout/data}"  # Set ROLLOUT_DATA_ROOT environment variable or update this path
+  root: "C:/Users/jrj6wm/Box/Flood_Modeling/Simulations/New_Results/Test_20_Paper"  # Test/evaluation data path
   xy_file: "M40_XY.txt"  # Filename for XY coordinates (geometry file)
   static_files:
     # Note: M40_XY.txt is included here as a static feature (XY coordinates as features)

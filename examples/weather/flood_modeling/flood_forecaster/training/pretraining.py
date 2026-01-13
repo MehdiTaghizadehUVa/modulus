@@ -26,14 +26,17 @@ from typing import Optional
 import torch
 from torch.utils.data import DataLoader, random_split
 
-from neuralop.training import AdamW, Trainer
+from neuralop.training import AdamW
 from neuralop.losses import LpLoss
 from neuralop import get_model
-from neuralop.training.training_state import save_training_state
+
+from physicsnemo.launch.utils.checkpoint import save_checkpoint
+from training.trainer import save_model_checkpoint
 
 from datasets import FloodDatasetWithQueryPoints, NormalizedDataset
 from data_processing import FloodGINODataProcessor, GINOWrapper, LpLossWrapper
 from utils.normalization import collect_all_fields, stack_and_fit_transform
+from training.trainer import NeuralOperatorTrainer
 
 
 def create_scheduler(optimizer, config, logger=None):
@@ -258,16 +261,17 @@ def pretrain_model(config, device, is_logger, source_data_config, logger=None):
     )
     data_processor.wrap(model)
     
-    # Create trainer (neuralop 2.0.0 API uses keyword-only arguments)
+    # Create trainer using PhysicsNeMo-style trainer
     n_epochs = config.training.get("n_epochs_source", config.training.get("n_epochs", 100))
-    logger.info(f"Creating Trainer for {n_epochs} epochs...")
-    trainer_src = Trainer(
+    logger.info(f"Creating NeuralOperatorTrainer for {n_epochs} epochs...")
+    trainer_src = NeuralOperatorTrainer(
         model=model,
         n_epochs=n_epochs,
         data_processor=data_processor,
         device=device,
         wandb_log=config.wandb.get("log", False),
         verbose=is_logger,
+        logger=logger if hasattr(logger, 'info') else None,
     )
 
     # Train using neuralop 2.0.0 API
@@ -292,20 +296,32 @@ def pretrain_model(config, device, is_logger, source_data_config, logger=None):
         resume_from_dir=config.checkpoint.get("resume_from_source", None),
     )
     
-    # Explicitly save final pretrained model checkpoint
+    # Explicitly save final pretrained model checkpoint using PhysicsNeMo checkpoint system
     # Ensure directory exists before saving
     os.makedirs(save_dir, exist_ok=True)
     logger.info(f"Saving final pretrained model checkpoint to {save_dir}")
-    save_training_state(
-        save_dir=save_dir,
-        save_name="model",
+    
+    # Save model using helper function that handles PyTorch submodules
+    # If it returns True, model was saved separately (as PyTorch model)
+    model_saved_separately = save_model_checkpoint(
         model=model,
+        save_dir=save_dir,
+        epoch=n_epochs - 1,  # Final epoch (0-indexed)
+        metadata={"stage": "pretrain", "final_epoch": True},
+    )
+    
+    # Save optimizer, scheduler, and metadata using PhysicsNeMo
+    # Include model only if it wasn't saved separately
+    save_checkpoint(
+        path=save_dir,
+        models=None if model_saved_separately else model,
         optimizer=optimizer_src,
         scheduler=scheduler_src,
-        regularizer=None,
-        epoch=n_epochs - 1,  # Final epoch (0-indexed)
+        scaler=None,
+        epoch=n_epochs - 1,
+        metadata={"stage": "pretrain", "final_epoch": True},
     )
-    logger.info("Saved pretrained model checkpoint")
+    logger.info("Saved pretrained model checkpoint using PhysicsNeMo format")
     
     # Save normalizers to checkpoint directory
     normalizers_path = os.path.join(save_dir, "normalizers.pt")

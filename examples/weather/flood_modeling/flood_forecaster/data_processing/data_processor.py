@@ -20,7 +20,8 @@ Data processor for GINO flood prediction model.
 Compatible with neuralop 2.0.0 API.
 """
 
-from typing import Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
+import warnings
 
 import torch
 import torch.nn as nn
@@ -35,6 +36,154 @@ except ImportError:
     HAS_JAXTYPING = False
     # Fallback type alias for when jaxtyping is not available
     Float = None
+
+
+def _create_custom_physicsnemo_wrapper(torch_model_instance: nn.Module) -> physicsnemo.models.Module:
+    r"""
+    Create a custom PhysicsNeMo wrapper that preserves the original model's forward signature.
+    
+    This wrapper is used to convert PyTorch modules to PhysicsNeMo modules while maintaining
+    full compatibility with the original model's interface, including complex forward signatures
+    and attribute access.
+    
+    Parameters
+    ----------
+    torch_model_instance : nn.Module
+        The PyTorch module instance to wrap.
+    
+    Returns
+    -------
+    physicsnemo.models.Module
+        A PhysicsNeMo module that wraps the original PyTorch module.
+    """
+    class CustomPhysicsNeMoWrapper(physicsnemo.models.Module):
+        r"""
+        Custom PhysicsNeMo wrapper that preserves original model interface.
+        
+        This wrapper stores the original PyTorch model as inner_model and delegates
+        all method calls and attribute access to it, ensuring full compatibility.
+        """
+        
+        def __init__(self, inner_model: nn.Module):
+            r"""
+            Initialize the wrapper with the original PyTorch model.
+            
+            Parameters
+            ----------
+            inner_model : nn.Module
+                The original PyTorch model instance to wrap.
+            """
+            model_name = inner_model.__class__.__name__
+            super().__init__(meta=ModelMetaData(name=f"{model_name}PhysicsNeMo"))
+            # Set inner_model as direct attribute first (for immediate access)
+            # Then register it as a submodule (for PyTorch parameter/buffer tracking)
+            object.__setattr__(self, 'inner_model', inner_model)
+            if isinstance(inner_model, nn.Module):
+                # Register in _modules for proper PyTorch tracking
+                # This will also set self.inner_model, but we've already set it above
+                # so this ensures it's in _modules for proper module tracking
+                self._modules['inner_model'] = inner_model
+            
+            # CRITICAL: Remove inner_model from _args so PhysicsNeMo's save process
+            # doesn't try to serialize it. inner_model is a PyTorch module and would
+            # cause an error. The model state is stored in state_dict, not in _args.
+            # This is safe because inner_model is just an implementation detail for
+            # wrapping - the actual model parameters are in the module's state_dict.
+            if hasattr(self, '_args') and 'inner_model' in self._args.get('__args__', {}):
+                # Remove inner_model from serializable args
+                # We'll reconstruct it from state_dict during loading if needed
+                del self._args['__args__']['inner_model']
+        
+        def forward(self, *args, **kwargs):
+            r"""
+            Forward pass that preserves the original model's signature.
+            
+            All arguments are passed through to the inner model, preserving
+            the original forward signature completely.
+            
+            Parameters
+            ----------
+            *args
+                Positional arguments for the original model's forward method.
+            **kwargs
+                Keyword arguments for the original model's forward method.
+            
+            Returns
+            -------
+            Any
+                Output from the inner model's forward method.
+            """
+            return self.inner_model(*args, **kwargs)
+        
+        def __getattr__(self, name: str):
+            r"""
+            Delegate attribute access to the inner model.
+            
+            This ensures that all attributes, properties, and methods of the
+            original model are accessible through the wrapper.
+            
+            Parameters
+            ----------
+            name : str
+                Name of the attribute to access.
+            
+            Returns
+            -------
+            Any
+                The requested attribute from the inner model.
+            
+            Raises
+            ------
+            AttributeError
+                If the attribute is not found in either the wrapper or inner model.
+            """
+            # If we're asking for inner_model itself, try multiple ways to get it
+            if name == 'inner_model':
+                # Try direct attribute access first
+                try:
+                    return object.__getattribute__(self, 'inner_model')
+                except AttributeError:
+                    # Try _modules dict (where add_module stores it)
+                    if 'inner_model' in self._modules:
+                        return self._modules['inner_model']
+                    raise AttributeError(
+                        f"'{type(self).__name__}' object has no attribute 'inner_model'. "
+                        f"This should not happen - inner_model should be set during __init__."
+                    )
+            
+            # For wrapper attributes, use parent class
+            if name in ['meta', '_args']:
+                return super().__getattribute__(name)
+            
+            # Get inner_model - try multiple ways
+            inner_model = None
+            try:
+                inner_model = object.__getattribute__(self, 'inner_model')
+            except AttributeError:
+                # Try _modules dict
+                if 'inner_model' in self._modules:
+                    inner_model = self._modules['inner_model']
+            
+            if inner_model is None:
+                raise AttributeError(
+                    f"'{type(self).__name__}' object has no attribute 'inner_model'. "
+                    f"Cannot delegate attribute '{name}'."
+                )
+            
+            # Try to get from inner model
+            try:
+                return getattr(inner_model, name)
+            except AttributeError:
+                # Fall back to parent class attributes
+                try:
+                    return super().__getattribute__(name)
+                except AttributeError:
+                    raise AttributeError(
+                        f"'{type(self).__name__}' object has no attribute '{name}' "
+                        f"and inner model '{type(inner_model).__name__}' also has no attribute '{name}'"
+                    )
+    
+    return CustomPhysicsNeMoWrapper(torch_model_instance)
 
 
 class LpLossWrapper:
@@ -148,7 +297,9 @@ class GINOWrapper(physicsnemo.Module):
         Parameters
         ----------
         model : nn.Module
-            The GINO model to wrap.
+            The GINO model to wrap. If it's a PyTorch module (not PhysicsNeMo),
+            it will be automatically converted to a PhysicsNeMo module to enable
+            full PhysicsNeMo checkpoint support.
         autoregressive : bool, optional, default=False
             If True, enable residual connection for autoregressive time-stepping.
 
@@ -157,9 +308,68 @@ class GINOWrapper(physicsnemo.Module):
         ValueError
             If ``model`` is None.
         """
-        super().__init__(meta=ModelMetaData(name="GINOWrapper"))
         if model is None:
             raise ValueError("model cannot be None")
+        
+        # === OPTION 1: Auto-convert PyTorch modules to PhysicsNeMo modules ===
+        # IMPORTANT: Convert BEFORE calling super().__init__() so that PhysicsNeMo's
+        # __new__ captures the converted model in _args, not the original PyTorch model.
+        # This enables full PhysicsNeMo checkpoint support without requiring
+        # manual conversion or workarounds.
+        if isinstance(model, nn.Module) and not isinstance(model, physicsnemo.models.Module):
+            # Convert PyTorch module to PhysicsNeMo module
+            try:
+                # Use custom wrapper that preserves forward signature and attribute access
+                converted_model = _create_custom_physicsnemo_wrapper(model)
+                
+                # Verify the conversion worked
+                if not isinstance(converted_model, physicsnemo.models.Module):
+                    raise RuntimeError(
+                        f"Conversion failed: result is not a PhysicsNeMo Module, "
+                        f"got {type(converted_model)}"
+                    )
+                
+                # Replace model with converted version BEFORE super().__init__()
+                # This ensures PhysicsNeMo's __new__ captures the converted model in _args
+                model = converted_model
+                
+                # Optional: Log the conversion (only in debug mode to avoid noise)
+                import logging
+                logger = logging.getLogger(__name__)
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        f"Auto-converted PyTorch model {model.inner_model.__class__.__name__} "
+                        f"to PhysicsNeMo Module for checkpoint compatibility"
+                    )
+                
+            except Exception as e:
+                # Fallback: Keep original model but warn user
+                # The checkpoint saving code will handle this case by saving as PyTorch state_dict
+                warnings.warn(
+                    f"Failed to convert PyTorch model {model.__class__.__name__} to PhysicsNeMo Module: {e}. "
+                    f"Model will be saved as PyTorch state_dict instead of using PhysicsNeMo's Module.save(). "
+                    f"This is a fallback and should work, but full PhysicsNeMo checkpoint features won't be available.",
+                    UserWarning,
+                    stacklevel=2
+                )
+                # Continue with original model - the save_checkpoint will handle it
+        
+        # Now call super().__init__() - PhysicsNeMo's __new__ has already captured
+        # the arguments (including the converted model if conversion happened)
+        # But we need to update _args to ensure the converted model is stored
+        super().__init__(meta=ModelMetaData(name="GINOWrapper"))
+        
+        # Update _args to ensure the converted model is stored (in case conversion
+        # happened after __new__ captured the original model)
+        # This is a safety measure - ideally conversion happens before __new__,
+        # but this ensures _args is correct
+        if hasattr(self, '_args') and 'model' in self._args.get('__args__', {}):
+            # Check if the stored model is PyTorch but we have a converted one
+            stored_model = self._args['__args__']['model']
+            if isinstance(stored_model, nn.Module) and not isinstance(stored_model, physicsnemo.models.Module):
+                # Update _args with the converted model
+                self._args['__args__']['model'] = model
+        
         # Register as a submodule so it's properly tracked by PyTorch
         # This ensures the model is properly stored and accessible
         # Always store as both submodule (for PyTorch) and direct attribute (for easy access)
@@ -265,12 +475,20 @@ class GINOWrapper(physicsnemo.Module):
             batch_size = x.shape[0]
         
         # Handle latent_features validation (matching new GINO)
+        # Access gino attributes - works for both converted and unconverted models
+        # Use safe attribute access to avoid triggering __getattr__ recursion
+        try:
+            # Try to get inner_model directly (for converted models)
+            gino_model = object.__getattribute__(self.gino, 'inner_model')
+        except (AttributeError, TypeError):
+            # If inner_model doesn't exist, use gino directly (unconverted model)
+            gino_model = self.gino
         if latent_features is not None:
-            if self.gino.latent_feature_channels is None:
+            if gino_model.latent_feature_channels is None:
                 raise ValueError("if passing latent features, latent_feature_channels must be set.")
-            if latent_features.shape[-1] != self.gino.latent_feature_channels:
+            if latent_features.shape[-1] != gino_model.latent_feature_channels:
                 raise ValueError(f"latent_features.shape[-1] must equal latent_feature_channels")
-            if latent_features.ndim != self.gino.gno_coord_dim + 2:
+            if latent_features.ndim != gino_model.gno_coord_dim + 2:
                 raise ValueError(
                     f"Latent features must be of shape (batch, n_gridpts_1, ...n_gridpts_n, feat_dim), "
                     f"got {latent_features.shape}"
@@ -284,7 +502,7 @@ class GINOWrapper(physicsnemo.Module):
         latent_queries = latent_queries.squeeze(0)
         
         # Pass through input GNOBlock (matching new GINO exactly)
-        in_p = self.gino.gno_in(
+        in_p = gino_model.gno_in(
             y=input_geom, 
             x=latent_queries.view((-1, latent_queries.shape[-1])), 
             f_y=x
@@ -292,7 +510,7 @@ class GINOWrapper(physicsnemo.Module):
         
         # Reshape to grid format (matching new GINO)
         grid_shape = latent_queries.shape[:-1]  # (H, W) for 2D
-        in_p = in_p.view((batch_size, *grid_shape, -1))
+        in_p = in_p.reshape((batch_size, *grid_shape, -1))
         
         # Concatenate latent features if provided (matching new GINO)
         if latent_features is not None:
@@ -300,7 +518,11 @@ class GINOWrapper(physicsnemo.Module):
         
         # Get latent embedding (this is what we need for feature extraction)
         # This matches new GINO's latent_embedding call
-        latent_embed = self.gino.latent_embedding(in_p=in_p, ada_in=ada_in)
+        # Handle nn.Identity() which doesn't accept keyword arguments
+        if isinstance(gino_model.latent_embedding, torch.nn.Identity):
+            latent_embed = gino_model.latent_embedding(in_p)
+        else:
+            latent_embed = gino_model.latent_embedding(in_p=in_p, ada_in=ada_in)
         # latent_embed shape: (B, channels, H, W) for 2D - keep this for feature return
         
         # Prepare for output GNO (matching new GINO exactly)
@@ -309,11 +531,11 @@ class GINOWrapper(physicsnemo.Module):
         # permute to (b, n_1, n_2, ...n_k, c) then reshape to (b, n_1 * n_2 * ...n_k, c)
         # Note: new GINO reassigns latent_embed here, but we keep both versions
         latent_embed_flat = latent_embed.permute(
-            0, *self.gino.in_coord_dim_reverse_order, 1
-        ).reshape(batch_size, -1, self.gino.fno_hidden_channels)
+            0, *gino_model.in_coord_dim_reverse_order, 1
+        ).reshape(batch_size, -1, gino_model.fno_hidden_channels)
         
         # Apply tanh if needed (matching new GINO - applied after reshape to flattened version)
-        if self.gino.out_gno_tanh in ["latent_embed", "both"]:
+        if gino_model.out_gno_tanh in ["latent_embed", "both"]:
             latent_embed_flat = torch.tanh(latent_embed_flat)
             # Also apply to unflattened latent_embed for feature return consistency
             latent_embed = torch.tanh(latent_embed)
@@ -325,13 +547,14 @@ class GINOWrapper(physicsnemo.Module):
             for key, out_p in output_queries.items():
                 out_p = out_p.squeeze(0)
                 
-                sub_output = self.gino.gno_out(
+                sub_output = gino_model.gno_out(
                     y=latent_queries.reshape((-1, latent_queries.shape[-1])),
                     x=out_p,
                     f_y=latent_embed_flat,
                 )
-                sub_output = sub_output.permute(0, 2, 1)
-                sub_output = self.gino.projection(sub_output).permute(0, 2, 1)
+                sub_output = sub_output.permute(0, 2, 1)  # (B, channels, n_out) -> (B, n_out, channels)
+                sub_output = gino_model.projection(sub_output)  # (B, n_out, channels) -> (B, n_out, out_channels)
+                # No final permute - keep as (B, n_out, out_channels) to match docstring
                 
                 # Apply residual connection if autoregressive (NEW FUNCTIONALITY)
                 if self.autoregressive and (x is not None):
@@ -340,11 +563,11 @@ class GINOWrapper(physicsnemo.Module):
                             f"Autoregressive skip requires out.shape[1] == x.shape[1], "
                             f"got {sub_output.shape[1]} vs {x.shape[1]}."
                         )
-                    if self.gino.out_channels > x.shape[2]:
+                    if gino_model.out_channels > x.shape[2]:
                         raise ValueError(
-                            f"Cannot skip-add: out_channels {self.gino.out_channels} > in_channels {x.shape[2]}."
+                            f"Cannot skip-add: out_channels {gino_model.out_channels} > in_channels {x.shape[2]}."
                         )
-                    prev_step = x[..., -self.gino.out_channels:]
+                    prev_step = x[..., -gino_model.out_channels:]
                     sub_output = sub_output + prev_step
                 
                 out[key] = sub_output
@@ -352,13 +575,14 @@ class GINOWrapper(physicsnemo.Module):
             # Single output query (matching new GINO)
             output_queries = output_queries.squeeze(0)
             
-            out = self.gino.gno_out(
+            out = gino_model.gno_out(
                 y=latent_queries.reshape((-1, latent_queries.shape[-1])),
                 x=output_queries,
                 f_y=latent_embed_flat,
             )
-            out = out.permute(0, 2, 1)
-            out = self.gino.projection(out).permute(0, 2, 1)
+            out = out.permute(0, 2, 1)  # (B, channels, n_out) -> (B, n_out, channels)
+            out = gino_model.projection(out)  # (B, n_out, channels) -> (B, n_out, out_channels)
+            # No final permute - keep as (B, n_out, out_channels) to match docstring
             
             # Apply residual connection if autoregressive (NEW FUNCTIONALITY)
             if self.autoregressive and (x is not None):
@@ -367,11 +591,11 @@ class GINOWrapper(physicsnemo.Module):
                         f"Autoregressive skip requires out.shape[1] == x.shape[1], "
                         f"got {out.shape[1]} vs {x.shape[1]}."
                     )
-                if self.gino.out_channels > x.shape[2]:
+                if gino_model.out_channels > x.shape[2]:
                     raise ValueError(
-                        f"Cannot skip-add: out_channels {self.gino.out_channels} > in_channels {x.shape[2]}."
+                        f"Cannot skip-add: out_channels {gino_model.out_channels} > in_channels {x.shape[2]}."
                     )
-                prev_step = x[..., -self.gino.out_channels:]
+                prev_step = x[..., -gino_model.out_channels:]
                 out = out + prev_step
         
         # Return features if requested (NEW FUNCTIONALITY)
@@ -383,18 +607,48 @@ class GINOWrapper(physicsnemo.Module):
     @property
     def fno_hidden_channels(self) -> int:
         r"""Expose GINO's fno_hidden_channels for domain classifier."""
-        return self.gino.fno_hidden_channels
+        # Handle both converted (has inner_model) and unconverted models
+        try:
+            gino_model = object.__getattribute__(self.gino, 'inner_model')
+        except (AttributeError, TypeError):
+            gino_model = self.gino
+        return gino_model.fno_hidden_channels
     
     @property  
     def model(self) -> nn.Module:
         r"""Alias for the wrapped model."""
-        return self.gino
+        # Return the actual GINO model (unwrap if converted)
+        try:
+            return object.__getattribute__(self.gino, 'inner_model')
+        except (AttributeError, TypeError):
+            return self.gino
+    
+    @property
+    def device(self) -> torch.device:
+        r"""Return the device of the model (device of first parameter)."""
+        # Get the actual GINO model (unwrap if converted)
+        try:
+            gino_model = object.__getattribute__(self.gino, 'inner_model')
+        except (AttributeError, TypeError):
+            gino_model = self.gino
+        
+        # Return device of first parameter (standard PyTorch pattern)
+        if hasattr(gino_model, 'device'):
+            return gino_model.device
+        # Fallback: get device from first parameter
+        try:
+            first_param = next(gino_model.parameters())
+            return first_param.device
+        except StopIteration:
+            # No parameters, return CPU as default
+            return torch.device('cpu')
     
     def __getattr__(self, name):
         r"""
         Delegate attribute access to the underlying GINO model.
         
         This allows the wrapper to be used as a drop-in replacement.
+        Handles both converted (PhysicsNeMo) and unconverted (PyTorch) models.
         """
         # 'gino' and 'autoregressive' are wrapper attributes, should be accessible directly
         # If we get here, it means normal attribute lookup failed
@@ -416,12 +670,108 @@ class GINOWrapper(physicsnemo.Module):
             gino = self._modules['gino']
         
         if gino is not None:
+            # If gino is a converted model (has inner_model), access through it
+            # Otherwise, access directly
             try:
-                return getattr(gino, name)
+                # Try to get inner_model safely (for converted models)
+                try:
+                    inner_model = object.__getattribute__(gino, 'inner_model')
+                    # Try inner_model first (the actual GINO model)
+                    return getattr(inner_model, name)
+                except (AttributeError, TypeError):
+                    # No inner_model, so gino is the actual model
+                    return getattr(gino, name)
             except AttributeError:
-                pass
+                # If not found, try the wrapper itself (for wrapper-specific attributes)
+                try:
+                    inner_model = object.__getattribute__(gino, 'inner_model')
+                    # Try wrapper attributes
+                    return getattr(gino, name)
+                except (AttributeError, TypeError):
+                    pass
         
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+    
+    def load_state_dict(self, state_dict: Dict[str, Any], strict: bool = True) -> Any:
+        r"""
+        Load state dictionary, filtering out non-model keys like _metadata.
+        
+        PhysicsNeMo's Module.save() may include metadata keys in the state_dict
+        that PyTorch's load_state_dict() doesn't expect. This method filters
+        out those keys before loading.
+        
+        Parameters
+        ----------
+        state_dict : Dict[str, Any]
+            State dictionary to load.
+        strict : bool, optional
+            Whether to strictly enforce that the keys in state_dict match
+            the keys returned by this module's state_dict() function.
+            Default is True.
+        
+        Returns
+        -------
+        Any
+            Missing and unexpected keys (same as PyTorch's load_state_dict).
+        """
+        # Filter out non-model keys that PhysicsNeMo may include
+        # These are metadata keys that shouldn't be loaded into the model
+        filtered_state_dict = {}
+        non_model_keys = ['_metadata', 'device_buffer']  # Add other non-model keys here if needed
+        
+        # Get the actual GINO model (unwrap if converted)
+        try:
+            gino_model = object.__getattribute__(self.gino, 'inner_model')
+        except (AttributeError, TypeError):
+            gino_model = self.gino
+        
+        # Check if gino_model is a PhysicsNeMo Module - if so, it should handle its own loading
+        if isinstance(gino_model, physicsnemo.models.Module):
+            # For PhysicsNeMo modules, pass the state dict through with proper key mapping
+            # PhysicsNeMo's Module.load_state_dict will handle the nested structure
+            for key, value in state_dict.items():
+                # Skip non-model keys
+                if key in non_model_keys or (key.startswith('_') and key != '_modules'):
+                    continue
+                
+                # Handle nested keys from PhysicsNeMo checkpoints
+                if key.startswith('gino.inner_model.'):
+                    # Map to inner model keys (remove 'gino.inner_model.' prefix)
+                    inner_key = key.replace('gino.inner_model.', '')
+                    filtered_state_dict[inner_key] = value
+                elif key.startswith('gino.'):
+                    # For keys like 'gino.*', check if they should be passed to inner model
+                    # If the inner model is a PhysicsNeMo Module, it might expect these keys
+                    inner_key = key.replace('gino.', '')
+                    # Only include if it's not a wrapper-specific key
+                    if not inner_key.startswith('_'):
+                        filtered_state_dict[inner_key] = value
+                else:
+                    # Direct keys (parameters stored at root level in checkpoint)
+                    filtered_state_dict[key] = value
+            
+            # Load into the inner GINO model (PhysicsNeMo Module)
+            return gino_model.load_state_dict(filtered_state_dict, strict=strict)
+        else:
+            # For regular PyTorch modules, use the original logic
+            for key, value in state_dict.items():
+                # Skip non-model keys
+                if key in non_model_keys or key.startswith('_'):
+                    continue
+                
+                # Handle nested keys from PhysicsNeMo checkpoints (e.g., 'gino.inner_model.*')
+                if key.startswith('gino.inner_model.'):
+                    # Map to inner model keys
+                    inner_key = key.replace('gino.inner_model.', '')
+                    filtered_state_dict[inner_key] = value
+                elif key.startswith('gino.'):
+                    # Skip gino wrapper keys, only load inner model
+                    continue
+                else:
+                    filtered_state_dict[key] = value
+            
+            # Load into the inner GINO model
+            return gino_model.load_state_dict(filtered_state_dict, strict=strict)
     
     def save_checkpoint(self, save_folder: str, save_name: str) -> None:
         r"""
@@ -439,9 +789,15 @@ class GINOWrapper(physicsnemo.Module):
         AttributeError
             If wrapped model does not have ``save_checkpoint`` method.
         """
-        if not hasattr(self.gino, 'save_checkpoint'):
-            raise AttributeError(f"Wrapped model {type(self.gino).__name__} does not have save_checkpoint method")
-        return self.gino.save_checkpoint(save_folder, save_name)
+        # Get the actual GINO model (unwrap if converted)
+        try:
+            gino_model = object.__getattribute__(self.gino, 'inner_model')
+        except (AttributeError, TypeError):
+            gino_model = self.gino
+        
+        if not hasattr(gino_model, 'save_checkpoint'):
+            raise AttributeError(f"Wrapped model {type(gino_model).__name__} does not have save_checkpoint method")
+        return gino_model.save_checkpoint(save_folder, save_name)
     
     @classmethod
     def from_checkpoint(cls, save_folder: str, save_name: str, map_location: Optional[str] = None):
