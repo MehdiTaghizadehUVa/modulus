@@ -23,7 +23,7 @@ from tqdm import tqdm
 
 from constants import Constants
 from physicsnemo.distributed.manager import DistributedManager
-from physicsnemo.launch.logging import (
+from physicsnemo.utils.logging import (
     PythonLogger,
     RankZeroLoggingWrapper,
 )

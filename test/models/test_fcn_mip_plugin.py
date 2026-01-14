@@ -22,10 +22,10 @@ import shutil
 import numpy as np
 import pytest
 import torch
-from pytest_utils import import_or_fail
 
+from physicsnemo.core.filesystem import Package
 from physicsnemo.models.dlwp import DLWP
-from physicsnemo.utils.filesystem import Package
+from test.conftest import requires_module
 
 
 @pytest.fixture
@@ -104,7 +104,7 @@ def save_checkpoint(model, check_point_path, del_device_buffer=False):
 #     return package
 
 
-# @import_or_fail(["dgl", "ruamel.yaml", "tensorly", "torch_harmonics", "tltorch"])
+# @requires_module(["dgl", "ruamel.yaml", "tensorly", "torch_harmonics", "tltorch"])
 # def test_sfno(tmp_path, pytestconfig):
 #     """Test SFNO plugin"""
 
@@ -145,7 +145,7 @@ def save_untrained_dlwp(path):
     return package
 
 
-@import_or_fail(["dgl", "ruamel.yaml", "tensorly", "torch_harmonics", "tltorch"])
+@requires_module(["dgl", "ruamel", "tensorly", "torch_harmonics", "tltorch"])
 @pytest.mark.parametrize("batch_size", [1, 4])
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
 def test_dlwp(tmp_path, batch_size, device, dlwp_data_dir, pytestconfig):
@@ -162,7 +162,7 @@ def test_dlwp(tmp_path, batch_size, device, dlwp_data_dir, pytestconfig):
     assert out.shape == x.shape
 
 
-@import_or_fail(["dgl", "ruamel.yaml", "tensorly", "torch_harmonics", "tltorch"])
+@requires_module(["dgl", "ruamel", "tensorly", "torch_harmonics", "tltorch"])
 @pytest.mark.parametrize("batch_size", [1, 2])
 def test__CozZenWrapper(batch_size, pytestconfig):
     """Test Cosine Zenith wrapper"""

@@ -23,9 +23,9 @@ import torch as th
 from hydra.utils import instantiate
 from omegaconf import DictConfig
 
+from physicsnemo.core.meta import ModelMetaData
+from physicsnemo.core.module import Module
 from physicsnemo.models.dlwp_healpix_layers import HEALPixFoldFaces, HEALPixUnfoldFaces
-from physicsnemo.models.meta import ModelMetaData
-from physicsnemo.models.module import Module
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,6 @@ logger = logging.getLogger(__name__)
 class MetaData(ModelMetaData):
     """Metadata for the DLWP HEALPix Model"""
 
-    name: str = "DLWP_HEALPixRec"
     # Optimization
     jit: bool = False
     cuda_graphs: bool = True

@@ -14,20 +14,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Tuple, Union, Optional, Literal, Dict, Any, Callable, Type
+from typing import Tuple, Union, Optional, Literal, Dict, Any
 import torch
 import torch.nn as nn
 
-from physicsnemo.models.diffusion import PositionalEmbedding, Linear
+from physicsnemo.nn import PositionalEmbedding, Linear
 from dataclasses import dataclass
-from physicsnemo.models.meta import ModelMetaData
-from physicsnemo.models.module import Module
+from physicsnemo.core.meta import ModelMetaData
+from physicsnemo.core.module import Module
 from physicsnemo.experimental.models.dit import DiTBlock
 from physicsnemo.experimental.models.dit.layers import get_tokenizer, get_detokenizer, TokenizerModuleBase, DetokenizerModuleBase
 
+
 @dataclass
 class MetaData(ModelMetaData):
-    name: str = "DiT"
     # Optimization
     jit: bool = False
     cuda_graphs: bool = False
@@ -103,7 +103,7 @@ class DiT(Module):
     block_kwargs (Dict[str, Any], optional):
         Additional keyword arguments for the DiTBlock modules.
     timestep_embed_kwargs (Dict[str, Any], optional):
-        Additional keyword arguments to be passed to :class:`physicsnemo.models.diffusion.PositionalEmbedding`.
+        Additional keyword arguments to be passed to :class:`physicsnemo.nn.PositionalEmbedding`.
     attn_kwargs (Dict[str, Any], optional):
         Additional keyword arguments for the attention module constructor, if using a custom attention backend.
     force_tokenization_fp32 (bool, optional):
@@ -208,7 +208,7 @@ class DiT(Module):
             )
         else:
             if not isinstance(tokenizer, TokenizerModuleBase):
-                raise TypeError("tokenizer must be a string or a physicsnemo.models.Module instance subclassing physicsnemo.experimental.models.dit.layers.TokenizerModuleBase")
+                raise TypeError("tokenizer must be a string or a physicsnemo.core.Module instance subclassing physicsnemo.experimental.models.dit.layers.TokenizerModuleBase")
             self.tokenizer = tokenizer
 
         self.t_embedder = PositionalEmbedding(hidden_size, amp_mode=self.meta.amp_gpu, learnable=True, **timestep_embed_kwargs)
@@ -239,7 +239,7 @@ class DiT(Module):
             )
         else:
             if not isinstance(detokenizer, DetokenizerModuleBase):
-                raise TypeError("detokenizer must be a string or a physicsnemo.models.Module instance subclassing physicsnemo.experimental.models.dit.layers.DetokenizerModuleBase")
+                raise TypeError("detokenizer must be a string or a physicsnemo.core.Module instance subclassing physicsnemo.experimental.models.dit.layers.DetokenizerModuleBase")
             self.detokenizer = detokenizer
 
 

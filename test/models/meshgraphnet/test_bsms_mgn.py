@@ -17,8 +17,9 @@
 
 import pytest
 import torch
-from models.common import validate_forward_accuracy
-from pytest_utils import import_or_fail
+
+from test.common import validate_forward_accuracy
+from test.conftest import requires_module
 
 
 @pytest.fixture
@@ -26,8 +27,7 @@ def ahmed_data_dir(nfs_data_dir):
     return nfs_data_dir.joinpath("datasets/ahmed_body")
 
 
-@import_or_fail(["sparse_dot_mkl", "torch_geometric", "torch_scatter"])
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
+@requires_module(["sparse_dot_mkl", "torch_geometric", "torch_scatter"])
 def test_bsms_mgn_forward(pytestconfig, device, set_physicsnemo_force_te):
     import torch_geometric as pyg
 
@@ -87,10 +87,11 @@ def test_bsms_mgn_forward(pytestconfig, device, set_physicsnemo_force_te):
     assert validate_forward_accuracy(
         model,
         (node_features, edge_features, g0, ms_edges0, ms_ids0),
+        file_name="models/data/bistridemeshgraphnet_output.pth",
     )
 
 
-@import_or_fail(["sparse_dot_mkl", "torch_geometric", "torch_scatter"])
+@requires_module(["sparse_dot_mkl", "torch_geometric", "torch_scatter"])
 def test_bsms_mgn_ahmed(pytestconfig, ahmed_data_dir):
     from physicsnemo.datapipes.gnn.ahmed_body_dataset import AhmedBodyDataset
     from physicsnemo.datapipes.gnn.bsms import BistrideMultiLayerGraphDataset

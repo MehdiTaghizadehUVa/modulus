@@ -22,8 +22,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-from physicsnemo.models.layers import BQWarp, Mlp, fourier_encode, get_activation
 from physicsnemo.models.unet import UNet
+from physicsnemo.nn import BQWarp, Mlp, fourier_encode, get_activation
 
 # from .encodings import fourier_encode
 

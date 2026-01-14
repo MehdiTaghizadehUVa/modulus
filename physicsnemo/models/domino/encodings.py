@@ -25,7 +25,7 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-from physicsnemo.models.layers import BQWarp
+from physicsnemo.nn import BQWarp
 
 from .mlps import LocalPointConv
 

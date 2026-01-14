@@ -25,7 +25,7 @@ from physicsnemo.distributed import DistributedManager
 from hydra.utils import instantiate
 
 from physicsnemo import Module
-from physicsnemo.launch.logging import PythonLogger, RankZeroLoggingWrapper
+from physicsnemo.utils.logging import PythonLogger, RankZeroLoggingWrapper
 
 from pathlib import Path
 

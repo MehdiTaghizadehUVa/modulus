@@ -19,18 +19,17 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
-from ..layers import (
+from physicsnemo.core.meta import ModelMetaData
+from physicsnemo.core.module import Module
+from physicsnemo.nn import (
     ConvBlock,
     CubeEmbedding,
     SwinTransformer,
 )
-from ..meta import ModelMetaData
-from ..module import Module
 
 
 @dataclass
 class MetaData(ModelMetaData):
-    name: str = "SwinRNN"
     # Optimization
     jit: bool = False  # ONNX Ops Conflict
     cuda_graphs: bool = True

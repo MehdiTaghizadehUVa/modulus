@@ -24,15 +24,23 @@ import numpy as np
 import pytest
 import torch
 import zarr
-from pytest_utils import import_or_fail
-from scipy.spatial import ConvexHull
 
+from physicsnemo.core.version_check import check_version_spec
 from physicsnemo.datapipes.cae.cae_dataset import CAEDataset
 from physicsnemo.datapipes.cae.domino_datapipe import (
     CachedDoMINODataset,
     DoMINODataConfig,
     DoMINODataPipe,
 )
+from test.conftest import requires_module
+
+if not check_version_spec("scipy", hard_fail=False):
+    pytest.skip(
+        "These tests require torch >= 2.6.0",
+        allow_module_level=True,
+    )
+else:
+    from scipy.spatial import ConvexHull
 
 Tensor = torch.Tensor
 
@@ -375,7 +383,7 @@ def validate_sample_structure(sample, model_type, gpu_output):
 
 
 # Core test - smaller matrix focusing on essential device/model combinations
-@import_or_fail(["warp", "cupy", "cuml"])
+@requires_module(["warp", "cupy", "cuml"])
 @pytest.mark.parametrize("data_dir", ["zarr_dataset", "npz_dataset", "npy_dataset"])
 @pytest.mark.parametrize("gpu_preprocessing", [True, False])
 @pytest.mark.parametrize("gpu_output", [True, False])
@@ -402,7 +410,7 @@ def test_domino_datapipe_core(
 
 
 # Feature-specific tests
-@import_or_fail(["warp", "cupy", "cuml"])
+@requires_module(["warp", "cupy", "cuml"])
 @pytest.mark.parametrize("model_type", ["combined"])
 @pytest.mark.parametrize("normalize_coordinates", [True, False])
 @pytest.mark.parametrize("sample_in_bbox", [True, False])
@@ -720,7 +728,7 @@ def test_domino_datapipe_volume_normalization(
     assert torch.all(pos_volume_center_of_mass_norm > sdf_nodes)
 
 
-@import_or_fail(["warp", "cupy", "cuml"])
+@requires_module(["warp", "cupy", "cuml"])
 @pytest.mark.parametrize("model_type", ["combined"])
 @pytest.mark.parametrize("sampling", [True, False])
 def test_domino_datapipe_sampling(zarr_dataset, model_type, sampling, pytestconfig):
@@ -776,7 +784,7 @@ def test_domino_datapipe_sampling(zarr_dataset, model_type, sampling, pytestconf
                 assert sample[key].shape[2] == dataset.config.num_surface_neighbors - 1
 
 
-@import_or_fail(["warp", "cupy", "cuml"])
+@requires_module(["warp", "cupy", "cuml"])
 @pytest.mark.parametrize("model_type", ["volume", "surface", "combined"])
 @pytest.mark.parametrize("scaling_type", [None, "min_max_scaling", "mean_std_scaling"])
 def test_domino_datapipe_scaling(zarr_dataset, model_type, scaling_type, pytestconfig):
@@ -817,7 +825,7 @@ def test_domino_datapipe_scaling(zarr_dataset, model_type, scaling_type, pytestc
 
 
 # Caching tests
-@import_or_fail(["warp", "cupy", "cuml"])
+@requires_module(["warp", "cupy", "cuml"])
 @pytest.mark.parametrize("model_type", ["volume"])
 def test_domino_datapipe_caching_config(zarr_dataset, model_type, pytestconfig):
     """Test DoMINODataPipe with caching=True configuration."""
@@ -835,7 +843,7 @@ def test_domino_datapipe_caching_config(zarr_dataset, model_type, pytestconfig):
     validate_sample_structure(sample, model_type, gpu_output=use_cuda)
 
 
-@import_or_fail(["warp", "cupy", "cuml"])
+@requires_module(["warp", "cupy", "cuml"])
 def test_cached_domino_dataset(zarr_dataset, tmp_path, pytestconfig):
     """Test CachedDoMINODataset functionality."""
 
@@ -874,7 +882,7 @@ def test_cached_domino_dataset(zarr_dataset, tmp_path, pytestconfig):
 
 
 # Configuration validation tests
-@import_or_fail(["warp", "cupy", "cuml"])
+@requires_module(["warp", "cupy", "cuml"])
 def test_domino_datapipe_invalid_caching_config(zarr_dataset, pytestconfig):
     """Test that invalid caching configurations raise appropriate errors."""
 
@@ -891,7 +899,7 @@ def test_domino_datapipe_invalid_caching_config(zarr_dataset, pytestconfig):
         )
 
 
-@import_or_fail(["warp", "cupy", "cuml"])
+@requires_module(["warp", "cupy", "cuml"])
 def test_domino_datapipe_invalid_phase(pytestconfig):
     """Test that invalid phase values raise appropriate errors."""
 
@@ -899,7 +907,7 @@ def test_domino_datapipe_invalid_phase(pytestconfig):
         DoMINODataConfig(data_path=tempfile.mkdtemp(), phase="invalid_phase")
 
 
-@import_or_fail(["warp", "cupy", "cuml"])
+@requires_module(["warp", "cupy", "cuml"])
 def test_domino_datapipe_invalid_scaling_type(pytestconfig):
     """Test that invalid scaling_type values raise appropriate errors."""
 
@@ -909,7 +917,7 @@ def test_domino_datapipe_invalid_scaling_type(pytestconfig):
         )
 
 
-@import_or_fail(["warp", "cupy", "cuml"])
+@requires_module(["warp", "cupy", "cuml"])
 def test_domino_datapipe_file_format_support(zarr_dataset, pytestconfig):
     """Test support for different file formats (.zarr, .npz, .npy)."""
     # This test assumes the data directory has files in these formats
@@ -926,7 +934,7 @@ def test_domino_datapipe_file_format_support(zarr_dataset, pytestconfig):
 
 
 # Surface-specific tests (when GPU preprocessing issues are resolved)
-@import_or_fail(["warp", "cupy", "cuml"])
+@requires_module(["warp", "cupy", "cuml"])
 @pytest.mark.parametrize("surface_sampling_algorithm", ["area_weighted", "random"])
 def test_domino_datapipe_surface_sampling(
     zarr_dataset, surface_sampling_algorithm, pytestconfig

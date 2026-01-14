@@ -25,7 +25,7 @@ import sys
 import torch
 
 from physicsnemo.distributed import DistributedManager
-from physicsnemo.launch.logging import PythonLogger, RankZeroLoggingWrapper
+from physicsnemo.utils.logging import PythonLogger, RankZeroLoggingWrapper
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 

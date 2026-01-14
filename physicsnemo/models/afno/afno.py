@@ -23,10 +23,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import physicsnemo  # noqa: F401 for docs
-import physicsnemo.models.layers.fft as fft
-
-from ..meta import ModelMetaData
-from ..module import Module
+import physicsnemo.nn.fft as fft
+from physicsnemo.core.meta import ModelMetaData
+from physicsnemo.core.module import Module
 
 Tensor = torch.Tensor
 
@@ -396,7 +395,6 @@ class PatchEmbed(nn.Module):
 
 @dataclass
 class MetaData(ModelMetaData):
-    name: str = "AFNO"
     # Optimization
     jit: bool = False  # ONNX Ops Conflict
     cuda_graphs: bool = True

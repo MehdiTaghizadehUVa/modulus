@@ -28,13 +28,13 @@ from torch.utils.data.distributed import DistributedSampler
 from physicsnemo.models.fno import FNO
 from physicsnemo.distributed import DistributedManager
 from physicsnemo.utils import StaticCaptureTraining, StaticCaptureEvaluateNoGrad
-from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
-from physicsnemo.launch.logging import (
+from physicsnemo.utils import load_checkpoint, save_checkpoint
+from physicsnemo.utils.logging import (
     PythonLogger,
     RankZeroLoggingWrapper,
     LaunchLogger,
 )
-from physicsnemo.launch.logging.mlflow import initialize_mlflow
+from physicsnemo.utils.logging.mlflow import initialize_mlflow
 from utils import NestedDarcyDataset, GridValidator
 
 

@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from physicsnemo.distributed import DistributedManager
-from physicsnemo.launch.logging import PythonLogger
+from physicsnemo.utils.logging import PythonLogger
 from physicsnemo.models.fno import FNO
 from physicsnemo.models.mlp.fully_connected import FullyConnected
 from physicsnemo.sym.eq.pdes.navier_stokes import NavierStokes

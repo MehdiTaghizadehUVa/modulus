@@ -14,21 +14,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ruff: noqa: E402
-import os
-import sys
 
 import pytest
 import torch
 
-script_path = os.path.abspath(__file__)
-sys.path.append(os.path.join(os.path.dirname(script_path), ".."))
-
-import common
-
-from physicsnemo.models.diffusion import DhariwalUNet as UNet
+from physicsnemo.models.diffusion_unets import DhariwalUNet as UNet
+from test import common
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_dhariwal_unet_forward(device):
     torch.manual_seed(0)
     model = UNet(img_resolution=64, in_channels=2, out_channels=2).to(device)
@@ -39,12 +32,11 @@ def test_dhariwal_unet_forward(device):
     assert common.validate_forward_accuracy(
         model,
         (input_image, noise_labels, class_labels),
-        file_name="dhariwal_unet_output.pth",
+        file_name="models/diffusion/data/dhariwal_unet_output.pth",
         atol=1e-3,
     )
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_dhariwal_unet_constructor(device):
     """Test the Dhariwal UNet constructor options"""
 
@@ -64,9 +56,11 @@ def test_dhariwal_unet_constructor(device):
 
 
 # Skip CPU tests because too slow
-@pytest.mark.parametrize("device", ["cuda:0"])
 def test_dhariwal_unet_optims(device):
     """Test Dhariwal UNet optimizations"""
+
+    if device == "cpu":
+        pytest.skip("CUDA only")
 
     def setup_model():
         model = UNet(
@@ -112,9 +106,11 @@ def test_dhariwal_unet_optims(device):
 
 
 # Skip CPU tests because too slow
-@pytest.mark.parametrize("device", ["cuda:0"])
 def test_dhariwal_unet_checkpoint(device):
     """Test Dhariwal UNet checkpoint save/load"""
+
+    if device == "cpu":
+        pytest.skip("CUDA only")
 
     model_1 = UNet(
         img_resolution=16,
@@ -142,7 +138,6 @@ def test_dhariwal_unet_checkpoint(device):
 
 
 @common.check_ort_version()
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_dhariwal_unet_deploy(device):
     """Test Dhariwal UNet deployment support"""
     model = UNet(

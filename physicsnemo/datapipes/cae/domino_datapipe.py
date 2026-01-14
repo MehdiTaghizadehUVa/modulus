@@ -43,8 +43,8 @@ from physicsnemo.datapipes.cae.cae_dataset import (
     compute_mean_std_min_max,
 )
 from physicsnemo.distributed import DistributedManager
-from physicsnemo.distributed.shard_tensor import ShardTensor, scatter_tensor
-from physicsnemo.utils.domino.utils import (
+from physicsnemo.domain_parallel import ShardTensor, scatter_tensor
+from physicsnemo.models.domino.utils import (
     calculate_center_of_mass,
     create_grid,
     get_filenames,
@@ -55,9 +55,9 @@ from physicsnemo.utils.domino.utils import (
     unnormalize,
     unstandardize,
 )
-from physicsnemo.utils.neighbors import knn
+from physicsnemo.nn.neighbors import knn
+from physicsnemo.nn.sdf import signed_distance_field
 from physicsnemo.utils.profiling import profile
-from physicsnemo.utils.sdf import signed_distance_field
 
 
 class BoundingBox(Protocol):

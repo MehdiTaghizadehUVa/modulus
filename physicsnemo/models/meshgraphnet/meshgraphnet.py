@@ -14,59 +14,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import warnings
 from contextlib import nullcontext
-
-import torch
-import torch.nn as nn
-from torch import Tensor
-
-try:
-    import dgl  # noqa: F401 for docs
-
-    warnings.warn(
-        "DGL version of MeshGraphNet will soon be deprecated. "
-        "Please use PyG version instead.",
-        DeprecationWarning,
-    )
-except ImportError:
-    warnings.warn(
-        "Note: This only applies if you're using DGL.\n"
-        "MeshGraphNet (DGL version) requires the DGL library.\n"
-        "Install it with your preferred CUDA version from:\n"
-        "https://www.dgl.ai/pages/start.html\n"
-    )
-
-try:
-    import torch_scatter  # noqa: F401
-except ImportError:
-    # TODO(akamenev): warning for now to maintain temporary backwards compatibility
-    # with DGL version. Replace with ImportError after DGL is removed.
-    warnings.warn(
-        "MeshGraphNet will soon require PyTorch Geometric and torch_scatter.\n"
-        "Install it from here:\n"
-        "https://github.com/rusty1s/pytorch_scatter\n"
-    )
-
 from dataclasses import dataclass
 from itertools import chain
 from typing import Callable, List, Tuple, Union
 from warnings import warn
 
+import torch
+import torch.nn as nn
+from torch import Tensor
+
 import physicsnemo  # noqa: F401 for docs
-from physicsnemo.models.gnn_layers.mesh_edge_block import MeshEdgeBlock
-from physicsnemo.models.gnn_layers.mesh_graph_mlp import MeshGraphMLP
-from physicsnemo.models.gnn_layers.mesh_node_block import MeshNodeBlock
-from physicsnemo.models.gnn_layers.utils import GraphType, set_checkpoint_fn
-from physicsnemo.models.layers import get_activation
-from physicsnemo.models.meta import ModelMetaData
-from physicsnemo.models.module import Module
+from physicsnemo.core.meta import ModelMetaData
+from physicsnemo.core.module import Module
+from physicsnemo.nn import get_activation
+from physicsnemo.nn.gnn_layers.mesh_edge_block import MeshEdgeBlock
+from physicsnemo.nn.gnn_layers.mesh_graph_mlp import MeshGraphMLP
+from physicsnemo.nn.gnn_layers.mesh_node_block import MeshNodeBlock
+from physicsnemo.nn.gnn_layers.utils import GraphType, set_checkpoint_fn
 from physicsnemo.utils.profiling import profile
 
 
 @dataclass
 class MetaData(ModelMetaData):
-    name: str = "MeshGraphNet"
     # Optimization, no JIT as DGLGraph causes trouble
     jit: bool = False
     cuda_graphs: bool = False
@@ -139,7 +109,9 @@ class MeshGraphNet(Module):
     ...         input_dim_edges=3,
     ...         output_dim=2,
     ...     )
-    >>> graph = dgl.rand_graph(10, 5)
+    >>> from torch_geometric.data import Data
+    >>> edge_index = torch.randint(0, 10, (2, 5))
+    >>> graph = Data(edge_index=edge_index)
     >>> node_features = torch.randn(10, 4)
     >>> edge_features = torch.randn(5, 3)
     >>> output = model(node_features, edge_features, graph)

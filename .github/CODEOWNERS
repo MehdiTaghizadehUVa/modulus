@@ -18,6 +18,9 @@
 ./CHANGELOG.md 
 ./*.md @ram-cherukuri @megnvidia
 
+.github/workflows @ktangsali @coreyjadams @nickgeneva
+.github/workflows/merge-queue-blossom-passthrough.yml @coreyjadams
+
 # All changes to documentation, except images:
 docs/ @megnvidia @ktangsali
 docs/img/
@@ -42,11 +45,16 @@ physicsnemo/metrics/cae @RishikeshRanade @mnabian @peterdsharpe
 physicsnemo/metrics/general @dallasfoster @nickgeneva
 physicsnemo/metrics/climate @dallasfoster @nickgeneva
 
+# Active learning components
+physicsnemo/active_learning @laserkelvin @dallasfoster
+
 # LAUNCH and DEPLOY TOOLS
 # NEEDSOWNER
 physicsnemo/launch
 physicsnemo/deploy
 
+# Mesh
+physicsnemo/mesh @peterdsharpe
 
 # DATAPIPES
 physicsnemo/datapipes/climate @dallasfoster @nickgeneva @pzharrington
@@ -132,6 +140,7 @@ physicsnemo/models/vfgn @mnabian
 
 # corrdiff
 examples/weather/corrdiff @CharlelieLrt
+examples/active_learning @laserkelvin @dallasfoster
 
 # TEST SPECIFIC OWNERSHIP
 
@@ -140,3 +149,7 @@ test/models/diffusion @CharlelieLrt
 test/metrics/diffusion @CharlelieLrt
 test/utils/generative @CharlelieLrt
 test/utils/corrdiff @CharlelieLrt
+test/active_learning @laserkelvin @dallasfoster
+
+# Mesh
+test/mesh @peterdsharpe

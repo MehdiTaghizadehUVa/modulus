@@ -15,28 +15,21 @@
 # limitations under the License.
 
 # ruff: noqa: E402
-import os
-import sys
 from pathlib import Path
 
 import pytest
 import torch
 
-script_path = os.path.abspath(__file__)
-sys.path.append(os.path.join(os.path.dirname(script_path), ".."))
-
-import common
-
-from physicsnemo.models.diffusion import StormCastUNet, UNet
+from physicsnemo.models.diffusion_unets import CorrDiffRegressionUNet, StormCastUNet
+from test import common
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_unet_forwards(device):
     """Test forward passes of UNet wrappers"""
 
     # Construct the UNet model
     res, inc, outc = 64, 2, 3
-    model = UNet(
+    model = CorrDiffRegressionUNet(
         img_resolution=res,
         img_in_channels=inc,
         img_out_channels=outc,
@@ -56,13 +49,12 @@ def test_unet_forwards(device):
     assert output.shape == (1, outc, res, res)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_unet_fp16_forwards(device):
     """Test forward passes of UNet wrappers with fp16"""
 
     # Construct the UNet model
     res, inc, outc = 64, 2, 3
-    model_fp16 = UNet(
+    model_fp16 = CorrDiffRegressionUNet(
         img_resolution=res,
         img_in_channels=inc,
         img_out_channels=outc,
@@ -70,7 +62,7 @@ def test_unet_fp16_forwards(device):
         use_fp16=True,
     ).to(device)
 
-    model_fp32 = UNet(
+    model_fp32 = CorrDiffRegressionUNet(
         img_resolution=res,
         img_in_channels=inc,
         img_out_channels=outc,
@@ -97,14 +89,13 @@ def test_unet_fp16_forwards(device):
     assert output.shape == (1, outc, res, res)
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_unet_optims(device):
     """Test optimizations of U-Net wrappers"""
 
     res, inc, outc = 64, 2, 3
 
     def setup_model():
-        model = UNet(
+        model = CorrDiffRegressionUNet(
             img_resolution=res,
             img_in_channels=inc,
             img_out_channels=outc,
@@ -148,18 +139,17 @@ def test_unet_optims(device):
             assert common.validate_amp(model, (*invar,))
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_unet_checkpoint(device):
     """Test UNet wrapper checkpoint save/load"""
     # Construct UNet models
     res, inc, outc = 64, 2, 3
-    model_1 = UNet(
+    model_1 = CorrDiffRegressionUNet(
         img_resolution=res,
         img_in_channels=inc,
         img_out_channels=outc,
         model_type="SongUNet",
     ).to(device)
-    model_2 = UNet(
+    model_2 = CorrDiffRegressionUNet(
         img_resolution=res,
         img_in_channels=inc,
         img_out_channels=outc,
@@ -183,13 +173,12 @@ def test_unet_checkpoint(device):
     assert common.validate_checkpoint(model_1, model_2, (input_image,))
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_unet_properties(device):
     """Test UNet wrappers amp_mode and profile_mode properties"""
 
     res, inc, outc = 32, 1, 1
 
-    model = UNet(
+    model = CorrDiffRegressionUNet(
         img_resolution=res,
         img_in_channels=inc,
         img_out_channels=outc,
@@ -240,16 +229,15 @@ def test_unet_properties(device):
             assert sub.profile_mode is False
 
 
-@pytest.mark.parametrize("device", ["cuda:0", "cpu"])
 def test_unet_backward_compat(device):
     """Test backward compatibility of UNet wrappers"""
 
     # Construct Load UNet from older version
-    UNet.from_checkpoint(
+    CorrDiffRegressionUNet.from_checkpoint(
         file_name=(
             str(
                 Path(__file__).parents[1].resolve()
-                / Path("data")
+                / Path("diffusion/data")
                 / Path("diffusion_unet_0.1.0.mdlus")
             )
         )

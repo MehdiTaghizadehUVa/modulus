@@ -26,8 +26,8 @@ from omegaconf import DictConfig
 import torch.nn.functional as F
 from physicsnemo.models.meshgraphnet import MeshGraphNet
 import matplotlib.pyplot as plt
-from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
-from physicsnemo.launch.logging import LaunchLogger
+from physicsnemo.utils import load_checkpoint, save_checkpoint
+from physicsnemo.utils.logging import LaunchLogger
 from torch.nn.parallel import DistributedDataParallel
 from physicsnemo.distributed import DistributedManager
 

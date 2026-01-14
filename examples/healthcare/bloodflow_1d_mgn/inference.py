@@ -22,8 +22,8 @@ import os
 from torch.cuda.amp import GradScaler
 from generate_dataset import generate_normalized_graphs
 from physicsnemo.models.meshgraphnet import MeshGraphNet
-from physicsnemo.launch.logging import PythonLogger
-from physicsnemo.launch.utils import load_checkpoint
+from physicsnemo.utils.logging import PythonLogger
+from physicsnemo.utils import load_checkpoint
 import hydra
 from omegaconf import DictConfig
 import json

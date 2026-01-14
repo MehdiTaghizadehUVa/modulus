@@ -27,9 +27,9 @@ import wandb
 from einops import repeat, rearrange
 
 from physicsnemo.distributed import DistributedManager
-from physicsnemo.launch.logging import PythonLogger, RankZeroLoggingWrapper
+from physicsnemo.utils.logging import PythonLogger, RankZeroLoggingWrapper
 from physicsnemo import Module
-from physicsnemo.launch.logging.wandb import initialize_wandb
+from physicsnemo.utils.logging.wandb import initialize_wandb
 
 from datasets.dataset import EFWIDatapipe
 from utils.preconditioning import edm_precond

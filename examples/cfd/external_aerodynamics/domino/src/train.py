@@ -33,7 +33,6 @@ import re
 from typing import Literal, Any
 from tabulate import tabulate
 
-import apex
 import numpy as np
 import hydra
 from hydra.utils import to_absolute_path
@@ -57,15 +56,15 @@ import torch.cuda.nvtx as nvtx
 
 
 from physicsnemo.distributed import DistributedManager
-from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
-from physicsnemo.launch.logging import PythonLogger, RankZeroLoggingWrapper
+from physicsnemo.utils import load_checkpoint, save_checkpoint
+from physicsnemo.utils.logging import PythonLogger, RankZeroLoggingWrapper
 
 from physicsnemo.datapipes.cae.domino_datapipe import (
     DoMINODataPipe,
     create_domino_dataset,
 )
 from physicsnemo.models.domino.model import DoMINO
-from physicsnemo.utils.domino.utils import *
+from physicsnemo.models.domino.utils import *
 
 from utils import ScalingFactors, get_keys_to_read, coordinate_distributed_environment
 

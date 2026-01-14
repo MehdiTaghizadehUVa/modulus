@@ -28,11 +28,8 @@ import hydra
 from omegaconf import DictConfig
 from physicsnemo.models.fno import FNO
 from torch.utils.data import Dataset, DataLoader
-from physicsnemo.launch.logging import PythonLogger, LaunchLogger
 from torch.nn import MSELoss
-from torch.optim import Adam, lr_scheduler
-from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
-import torch.nn.functional as F
+from physicsnemo.utils import load_checkpoint
 
 
 class HDF5MapStyleDataset(Dataset):

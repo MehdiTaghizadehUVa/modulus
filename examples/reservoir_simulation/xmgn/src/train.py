@@ -45,10 +45,10 @@ import hydra
 from omegaconf import DictConfig
 
 from physicsnemo.distributed import DistributedManager
-from physicsnemo.launch.logging import PythonLogger, RankZeroLoggingWrapper
-from physicsnemo.launch.logging.mlflow import initialize_mlflow
-from physicsnemo.launch.logging import LaunchLogger
-from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
+from physicsnemo.utils.logging import PythonLogger, RankZeroLoggingWrapper
+from physicsnemo.utils.logging.mlflow import initialize_mlflow
+from physicsnemo.utils.logging import LaunchLogger
+from physicsnemo.utils import load_checkpoint, save_checkpoint
 from physicsnemo.models.meshgraphnet import MeshGraphNet
 
 from utils import get_dataset_paths, fix_layernorm_compatibility, EarlyStopping
