@@ -37,7 +37,7 @@ source_data:
   root: "C:/Users/jrj6wm/Box/Flood_Modeling/Simulations/New_Results"  # Source domain training data path
   resolution: 48  # Spatial resolution of the dataset (integer)
   n_history: 3  # Number of historical time steps to use as input (integer)
-  batch_size: 8  # Batch size for training (integer)
+  batch_size: 64  # Batch size for training (integer)
   query_res: [48, 48]  # Query resolution for GINO model [height, width] (list of 2 integers)
   xy_file: "M40_XY.txt"  # Filename for XY coordinates (geometry file)
   static_files:
@@ -65,10 +65,10 @@ source_data:
 
 # Target domain dataset
 target_data:
-  root: "C:/Users/jrj6wm/Box/Flood_Modeling/Simulations/New_Results"  # Target domain training data path (can be same as source or different)
+  root: "C:/Users/jrj6wm/Box/Flood_Modeling/Simulations/Case_4/Results_Target/Train"  # Target domain training data path (can be same as source or different)
   resolution: 48  # Spatial resolution of the dataset (integer)
   n_history: 3  # Number of historical time steps to use as input (integer)
-  batch_size: 8  # Batch size for domain adaptation training (integer)
+  batch_size: 64  # Batch size for domain adaptation training (integer)
   query_res: [48, 48]  # Query resolution for GINO model [height, width] (list of 2 integers)
   xy_file: "M40_XY.txt"  # Filename for XY coordinates (geometry file)
   static_files:
@@ -121,6 +121,7 @@ rollout_data:
 # is specifically designed for the GINO architecture. Changing model_arch would require significant code modifications.
 model:
   model_arch: 'gino'  # Model architecture (string, currently only 'gino' is supported)
+  autoregressive: true  # Enable autoregressive residual connection for time-stepping (boolean: true/false)
   data_channels: 20  # Number of input data channels (integer)
   out_channels: 3  # Number of output channels (integer, typically 3 for WD, VX, VY)
   latent_feature_channels: null  # Number of latent feature channels (integer or null)
@@ -186,9 +187,9 @@ rollout:
 
 # Optimization settings
 training:
-  n_epochs: 4  # Total epochs (fallback if n_epochs_source not specified)
-  n_epochs_source: 2  # Number of epochs for source domain pretraining (integer)
-  n_epochs_adapt: 2  # Number of epochs for domain adaptation (integer)
+  n_epochs: 50  # Total epochs (fallback if n_epochs_source not specified)
+  n_epochs_source: 30  # Number of epochs for source domain pretraining (integer)
+  n_epochs_adapt: 20  # Number of epochs for domain adaptation (integer)
   learning_rate: 1e-4  # Learning rate for pretraining (float, typically 1e-5 to 1e-3)
   adapt_learning_rate: 1e-4  # Learning rate for domain adaptation (float, typically 1e-5 to 1e-3)
   training_loss: 'l2'  # Training loss function. Available options: 'l1' (L1/LpLoss with p=1), 'l2' (L2/LpLoss with p=2)

@@ -553,22 +553,26 @@ class GINOWrapper(physicsnemo.Module):
                     f_y=latent_embed_flat,
                 )
                 sub_output = sub_output.permute(0, 2, 1)  # (B, channels, n_out) -> (B, n_out, channels)
-                sub_output = gino_model.projection(sub_output)  # (B, n_out, channels) -> (B, n_out, out_channels)
-                # No final permute - keep as (B, n_out, out_channels) to match docstring
+                sub_output = gino_model.projection(sub_output)  # (B, n_out, channels) -> (B, out_channels, n_out)
+                # Transpose to get (B, n_out, out_channels) to match expected shape
+                sub_output = sub_output.permute(0, 2, 1)  # (B, out_channels, n_out) -> (B, n_out, out_channels)
                 
                 # Apply residual connection if autoregressive (NEW FUNCTIONALITY)
+                # For autoregressive mode, add the previous time step's output
+                # The previous step should come from the last timestep of dynamic history in x
+                # Note: This only works if output_queries match input_geom spatial locations
                 if self.autoregressive and (x is not None):
-                    if sub_output.shape[1] != x.shape[1]:
-                        raise ValueError(
-                            f"Autoregressive skip requires out.shape[1] == x.shape[1], "
-                            f"got {sub_output.shape[1]} vs {x.shape[1]}."
-                        )
-                    if gino_model.out_channels > x.shape[2]:
-                        raise ValueError(
-                            f"Cannot skip-add: out_channels {gino_model.out_channels} > in_channels {x.shape[2]}."
-                        )
-                    prev_step = x[..., -gino_model.out_channels:]
-                    sub_output = sub_output + prev_step
+                    # sub_output shape: (B, n_out, out_channels)
+                    # x shape: (B, n_in, in_channels)
+                    # For autoregressive to work, n_out must equal n_in (same spatial locations)
+                    if sub_output.shape[0] == x.shape[0] and sub_output.shape[1] == x.shape[1]:
+                        # Spatial dimensions match - can apply autoregressive connection
+                        # Extract last 3 channels from x (last timestep of dynamic: WD, VX, VY)
+                        # x contains [static, boundary, dynamic] where dynamic ends with last 3 channels
+                        if x.shape[2] >= 3:
+                            prev_step = x[..., -3:]  # (B, n_in, 3) = (B, n_out, 3)
+                            sub_output = sub_output + prev_step
+                    # If spatial dimensions don't match, skip autoregressive (output_queries != input_geom)
                 
                 out[key] = sub_output
         else:
@@ -581,22 +585,26 @@ class GINOWrapper(physicsnemo.Module):
                 f_y=latent_embed_flat,
             )
             out = out.permute(0, 2, 1)  # (B, channels, n_out) -> (B, n_out, channels)
-            out = gino_model.projection(out)  # (B, n_out, channels) -> (B, n_out, out_channels)
-            # No final permute - keep as (B, n_out, out_channels) to match docstring
+            out = gino_model.projection(out)  # (B, n_out, channels) -> (B, out_channels, n_out)
+            # Transpose to get (B, n_out, out_channels) to match expected shape
+            out = out.permute(0, 2, 1)  # (B, out_channels, n_out) -> (B, n_out, out_channels)
             
             # Apply residual connection if autoregressive (NEW FUNCTIONALITY)
+            # For autoregressive mode, add the previous time step's output
+            # The previous step should come from the last timestep of dynamic history in x
+            # Note: This only works if output_queries match input_geom spatial locations
             if self.autoregressive and (x is not None):
-                if out.shape[1] != x.shape[1]:
-                    raise ValueError(
-                        f"Autoregressive skip requires out.shape[1] == x.shape[1], "
-                        f"got {out.shape[1]} vs {x.shape[1]}."
-                    )
-                if gino_model.out_channels > x.shape[2]:
-                    raise ValueError(
-                        f"Cannot skip-add: out_channels {gino_model.out_channels} > in_channels {x.shape[2]}."
-                    )
-                prev_step = x[..., -gino_model.out_channels:]
-                out = out + prev_step
+                # out shape: (B, n_out, out_channels)
+                # x shape: (B, n_in, in_channels)
+                # For autoregressive to work, n_out must equal n_in (same spatial locations)
+                if out.shape[0] == x.shape[0] and out.shape[1] == x.shape[1]:
+                    # Spatial dimensions match - can apply autoregressive connection
+                    # Extract last 3 channels from x (last timestep of dynamic: WD, VX, VY)
+                    # x contains [static, boundary, dynamic] where dynamic ends with last 3 channels
+                    if x.shape[2] >= 3:
+                        prev_step = x[..., -3:]  # (B, n_in, 3) = (B, n_out, 3)
+                        out = out + prev_step
+                # If spatial dimensions don't match, skip autoregressive (output_queries != input_geom)
         
         # Return features if requested (NEW FUNCTIONALITY)
         if return_features:

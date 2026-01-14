@@ -45,6 +45,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 import physicsnemo
 from physicsnemo.distributed import DistributedManager
@@ -489,7 +490,16 @@ class NeuralOperatorTrainer:
         epoch_metrics = {}
 
         # Main training loop
-        for epoch in range(self.start_epoch, self.n_epochs):
+        # Only show progress bar on rank 0 in distributed training
+        is_rank_zero = True
+        if DistributedManager.is_initialized():
+            dist_manager = DistributedManager()
+            is_rank_zero = dist_manager.rank == 0
+        epoch_range = range(self.start_epoch, self.n_epochs)
+        if is_rank_zero and self.verbose:
+            epoch_range = tqdm(epoch_range, desc="Training", unit="epoch")
+        
+        for epoch in epoch_range:
             self.epoch = epoch
 
             # Train for one epoch
@@ -553,7 +563,16 @@ class NeuralOperatorTrainer:
 
         t1 = default_timer()
 
-        for idx, sample in enumerate(train_loader):
+        # Only show progress bar on rank 0 in distributed training
+        is_rank_zero = True
+        if DistributedManager.is_initialized():
+            dist_manager = DistributedManager()
+            is_rank_zero = dist_manager.rank == 0
+        loader_iter = train_loader
+        if is_rank_zero and self.verbose:
+            loader_iter = tqdm(train_loader, desc=f"Epoch {epoch+1}/{self.n_epochs}", unit="batch", leave=False)
+
+        for idx, sample in enumerate(loader_iter):
             loss = self._train_one_batch(idx, sample, training_loss)
             
             # Track number of samples in batch
@@ -576,6 +595,10 @@ class NeuralOperatorTrainer:
                 avg_loss += loss.item()
                 if self.regularizer is not None:
                     avg_lasso_loss += self.regularizer.loss
+            
+            # Update progress bar with current loss
+            if is_rank_zero and self.verbose and hasattr(loader_iter, 'set_postfix'):
+                loader_iter.set_postfix({'loss': f'{loss.item():.6f}'})
 
         # Update learning rate scheduler
         if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
@@ -783,8 +806,17 @@ class NeuralOperatorTrainer:
                 )
 
         n_samples = 0
+        # Only show progress bar on rank 0 in distributed training
+        is_rank_zero = True
+        if DistributedManager.is_initialized():
+            dist_manager = DistributedManager()
+            is_rank_zero = dist_manager.rank == 0
+        loader_iter = data_loader
+        if is_rank_zero and self.verbose:
+            loader_iter = tqdm(data_loader, desc=f"Evaluating ({log_prefix})", unit="batch", leave=False)
+        
         with torch.no_grad():
-            for idx, sample in enumerate(data_loader):
+            for idx, sample in enumerate(loader_iter):
                 return_output = idx == len(data_loader) - 1
 
                 # Track samples before processing

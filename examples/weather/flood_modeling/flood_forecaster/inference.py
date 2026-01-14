@@ -117,17 +117,16 @@ def run_inference(cfg: DictConfig) -> None:
         # (not in struct mode) that supports both attribute and dict access
         model_config_dict = OmegaConf.to_container(cfg.model, resolve=True)
         # Create a wrapper config that neuralop expects: {"model": {...}}
+        # Extract autoregressive parameter before passing to get_model (GINO doesn't accept it)
+        autoregressive = model_config_dict.pop("autoregressive", False)
+        
         # Convert to OmegaConf DictConfig (not struct mode) so it supports attribute access
         wrapper_config = OmegaConf.create({"model": model_config_dict})
         gino_model = get_model(wrapper_config)
         gino_model = gino_model.to(device)
 
-        # Optionally enable autoregressive residual connection if specified in config
-        autoregressive = False
-        if hasattr(cfg, "model") and hasattr(cfg.model, "autoregressive"):
-            autoregressive = cfg.model.autoregressive
-        
         # Create GINOWrapper first (checkpoints are saved as GINOWrapper in PhysicsNeMo format)
+        # Enable autoregressive residual connection if specified in config
         model = GINOWrapper(gino_model, autoregressive=autoregressive)
         model = model.to(device)
 

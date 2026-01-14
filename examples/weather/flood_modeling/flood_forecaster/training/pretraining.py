@@ -207,6 +207,10 @@ def pretrain_model(config, device, is_logger, source_data_config, logger=None):
     # (not in struct mode) that supports both attribute and dict access
     from omegaconf import OmegaConf
     model_config_dict = OmegaConf.to_container(config.model, resolve=True)
+    
+    # Extract autoregressive parameter before passing to get_model (GINO doesn't accept it)
+    autoregressive = model_config_dict.pop("autoregressive", False)
+    
     # Create a wrapper config that neuralop expects: {"model": {...}}
     # Convert to OmegaConf DictConfig (not struct mode) so it supports attribute access
     wrapper_config = OmegaConf.create({"model": model_config_dict})
@@ -215,10 +219,7 @@ def pretrain_model(config, device, is_logger, source_data_config, logger=None):
     logger.info(f"Model created with {n_params:,} parameters")
     
     # Wrap model to filter out unexpected kwargs (like 'y') from Trainer
-    # Optionally enable autoregressive residual connection if specified in config
-    autoregressive = False
-    if hasattr(config, "model") and hasattr(config.model, "autoregressive"):
-        autoregressive = config.model.autoregressive
+    # Enable autoregressive residual connection if specified in config
     model = GINOWrapper(model, autoregressive=autoregressive)
     
     # Create optimizer and scheduler
