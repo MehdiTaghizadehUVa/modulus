@@ -40,6 +40,7 @@ import random
 import sys
 import tarfile
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, List, Optional, Union
 
@@ -265,6 +266,81 @@ FILES_TO_DOWNLOAD = None
 
 STATIC_NORM_STATS_FILE = "static_norm_stats.json"
 DYNAMIC_NORM_STATS_FILE = "dynamic_norm_stats.json"
+HYDROGRAPH_MESH_FEATURE_DIM = 10
+HYDROGRAPH_FORCING_FEATURE_DIM = 2
+
+
+@dataclass(frozen=True)
+class HydroGraphFeatureLayout:
+    """Explicit node feature layout used by HydroGraphNet."""
+
+    n_time_steps: int
+    mesh_start: int = 0
+    mesh_end: int = HYDROGRAPH_MESH_FEATURE_DIM
+    forcing_start: int = HYDROGRAPH_MESH_FEATURE_DIM
+    forcing_end: int = HYDROGRAPH_MESH_FEATURE_DIM + HYDROGRAPH_FORCING_FEATURE_DIM
+
+    @property
+    def water_depth_start(self) -> int:
+        return self.forcing_end
+
+    @property
+    def water_depth_end(self) -> int:
+        return self.water_depth_start + self.n_time_steps
+
+    @property
+    def volume_start(self) -> int:
+        return self.water_depth_end
+
+    @property
+    def volume_end(self) -> int:
+        return self.volume_start + self.n_time_steps
+
+    @property
+    def input_dim(self) -> int:
+        return self.volume_end
+
+    @property
+    def mesh_slice(self) -> slice:
+        return slice(self.mesh_start, self.mesh_end)
+
+    @property
+    def forcing_slice(self) -> slice:
+        return slice(self.forcing_start, self.forcing_end)
+
+    @property
+    def water_depth_slice(self) -> slice:
+        return slice(self.water_depth_start, self.water_depth_end)
+
+    @property
+    def volume_slice(self) -> slice:
+        return slice(self.volume_start, self.volume_end)
+
+
+def get_hydrograph_feature_layout(n_time_steps: int) -> HydroGraphFeatureLayout:
+    """Return the explicit HydroGraphNet node feature layout."""
+
+    if n_time_steps < 1:
+        raise ValueError("n_time_steps must be >= 1")
+    return HydroGraphFeatureLayout(n_time_steps=n_time_steps)
+
+
+def get_hydrograph_input_dim(n_time_steps: int) -> int:
+    """Return the expected HydroGraphNet node feature width."""
+
+    return get_hydrograph_feature_layout(n_time_steps).input_dim
+
+
+def compute_effective_rain_area_sum(
+    area_denorm: np.ndarray, infiltration_percent: np.ndarray
+) -> float:
+    """
+    Compute the effective rainfall area term using the user-confirmed semantics:
+    precipitation minus infiltration equals ``((100 - IP) / 100) * precipitation``.
+    """
+
+    runoff_fraction = (100.0 - infiltration_percent) / 100.0
+    return float(np.sum(runoff_fraction * area_denorm))
 
 
 # ---------------------------
@@ -297,6 +373,7 @@ class HydroGraphDataset(Dataset):
         self,
         name: str = "hydrograph_dataset",
         data_dir: Union[str, Path] = "data_directory",
+        stats_dir: Optional[Union[str, Path]] = None,
         prefix: str = "M80",
         num_samples: int = 500,
         n_time_steps: int = 10,
@@ -313,6 +390,7 @@ class HydroGraphDataset(Dataset):
 
         # Initialize dataset attributes.
         self.data_dir = str(data_dir)
+        self.stats_dir = str(stats_dir) if stats_dir is not None else self.data_dir
         ensure_data_available(self.data_dir)
         self.prefix = prefix
         self.num_samples = num_samples
@@ -333,6 +411,7 @@ class HydroGraphDataset(Dataset):
         self.hydrograph_ids = []
         self.static_stats = {}
         self.dynamic_stats = {}
+        self.feature_layout = get_hydrograph_feature_layout(self.n_time_steps)
 
         self.process()
 
@@ -380,17 +459,42 @@ class HydroGraphDataset(Dataset):
         # Build the graph connectivity using a k-d tree.
         num_nodes = xy_coords.shape[0]
         kdtree = KDTree(xy_coords)
-        _, neighbors = kdtree.query(xy_coords, k=self.k + 1)
+        _, neighbors = kdtree.query(xy_coords, k=min(self.k + 1, num_nodes))
+        neighbors = np.atleast_2d(neighbors)
         edge_index = np.vstack(
-            [(i, nbr) for i, nbrs in enumerate(neighbors) for nbr in nbrs if nbr != i]
+            [
+                (i, nbr)
+                for i, nbrs in enumerate(neighbors)
+                for nbr in np.atleast_1d(nbrs)
+                if nbr != i and nbr < num_nodes
+            ]
         ).T
         edge_features = self.create_edge_features(xy_coords, edge_index)
+        mesh_features = np.hstack(
+            [
+                xy_coords,
+                area,
+                elevation,
+                slope,
+                aspect,
+                curvature,
+                manning,
+                flow_accum,
+                infiltration,
+            ]
+        )
+        infiltration_percent = self.denormalize(
+            infiltration,
+            self.static_stats["infiltration"]["mean"],
+            self.static_stats["infiltration"]["std"],
+        )
 
         # Store static data.
         self.static_data = {
             "xy_coords": xy_coords,
             "area": area,
             "area_denorm": area_denorm,
+            "mesh_features": mesh_features,
             "elevation": elevation,
             "slope": slope,
             "aspect": aspect,
@@ -400,6 +504,10 @@ class HydroGraphDataset(Dataset):
             "infiltration": infiltration,
             "edge_index": edge_index,
             "edge_features": edge_features,
+            "total_area": float(np.sum(area_denorm)),
+            "effective_rain_area_sum": compute_effective_rain_area_sum(
+                area_denorm, infiltration_percent
+            ),
         }
 
         # Read hydrograph IDs either from a file or from the directory.
@@ -507,16 +615,16 @@ class HydroGraphDataset(Dataset):
             }
             self.dynamic_data.append(dyn_std)
 
+        requires_two_future_steps = self.return_physics or self.noise_type == "pushforward"
+
         # Build sample indices for training (sliding window) or validate test data.
         if self.split == "train":
             for h_idx, dyn in enumerate(self.dynamic_data):
                 T = dyn["water_depth"].shape[0]
-                if self.noise_type == "pushforward":
-                    max_t = T - self.n_time_steps - 1
-                else:
-                    max_t = T - self.n_time_steps
-                for t in range(max_t):
-                    self.sample_index.append((h_idx, t))
+                anchor_start = self.n_time_steps - 1
+                anchor_end_exclusive = T - (2 if requires_two_future_steps else 1)
+                for anchor_time in range(anchor_start, anchor_end_exclusive):
+                    self.sample_index.append((h_idx, anchor_time))
             self.length = len(self.sample_index)
         elif self.split == "test":
             for dyn in self.dynamic_data:
@@ -529,217 +637,212 @@ class HydroGraphDataset(Dataset):
 
     def __getitem__(self, idx: int):
         """
-        Retrieve a graph sample (and associated physics data if required).
+        Retrieve a graph sample.
 
         Args:
             idx (int): Index of the sample.
 
         Returns:
             Depending on the split:
-                - Training: A graph with node features, edge features, and target values, optionally
-                  along with a dictionary of physics data.
+                - Training: A PyG graph with targets and auxiliary tensors attached directly.
                 - Testing: A tuple (graph, rollout_data) where rollout_data contains future hydrograph data.
         """
         sd = self.static_data
-        if self.split != "test":
-            # Training mode: use sliding window sample.
-            hydro_idx, t_idx = self.sample_index[idx]
+        src, dst = sd["edge_index"]
+        edges = torch.as_tensor(np.stack([src, dst]), dtype=torch.long)
+        edge_attr = torch.tensor(sd["edge_features"], dtype=torch.float)
+
+        if self.split == "train":
+            hydro_idx, anchor_time = self.sample_index[idx]
             dyn = self.dynamic_data[hydro_idx]
-
-            # Determine the end index for the dynamic window.
-            end_index = (
-                t_idx + self.n_time_steps + 1
-                if self.noise_type == "pushforward"
-                else t_idx + self.n_time_steps
+            window_start = anchor_time - self.n_time_steps + 1
+            window_end = anchor_time + 1
+            water_depth_window = dyn["water_depth"][window_start:window_end, :]
+            volume_window = dyn["volume"][window_start:window_end, :]
+            node_features = self.create_node_features(
+                mesh_features=sd["mesh_features"],
+                water_depth=water_depth_window,
+                volume=volume_window,
+                inflow_value=float(dyn["inflow_hydrograph"][anchor_time]),
+                precipitation_value=float(dyn["precipitation"][anchor_time]),
             )
 
-            # Compute node features and future flow/precipitation values.
-            node_features, future_flow, future_precip = self.create_node_features(
-                sd["xy_coords"],
-                sd["area"],
-                sd["elevation"],
-                sd["slope"],
-                sd["aspect"],
-                sd["curvature"],
-                sd["manning"],
-                sd["flow_accum"],
-                sd["infiltration"],
-                dyn["water_depth"][t_idx:end_index, :],
-                dyn["volume"][t_idx:end_index, :],
-                dyn["precipitation"],
-                t_idx,
-                self.n_time_steps,
-                dyn["inflow_hydrograph"],
+            current_water_depth_denorm = self.denormalize(
+                dyn["water_depth"][anchor_time, :],
+                self.dynamic_stats["water_depth"]["mean"],
+                self.dynamic_stats["water_depth"]["std"],
+            ).reshape(-1, 1)
+            current_volume_denorm = self.denormalize(
+                dyn["volume"][anchor_time, :],
+                self.dynamic_stats["volume"]["mean"],
+                self.dynamic_stats["volume"]["std"],
+            ).reshape(-1, 1)
+            target = np.stack(
+                [
+                    dyn["water_depth"][anchor_time + 1, :] - dyn["water_depth"][anchor_time, :],
+                    dyn["volume"][anchor_time + 1, :] - dyn["volume"][anchor_time, :],
+                ],
+                axis=1,
             )
-            target_time = t_idx + self.n_time_steps
-            prev_time = target_time - 1
-            # Compute target differences for water depth and volume.
-            target_depth = (
-                dyn["water_depth"][target_time, :] - dyn["water_depth"][prev_time, :]
+
+            g = pyg.data.Data(
+                edge_index=edges,
+                edge_attr=edge_attr,
+                x=torch.tensor(node_features, dtype=torch.float),
+                y=torch.tensor(target, dtype=torch.float),
             )
-            target_volume = dyn["volume"][target_time, :] - dyn["volume"][prev_time, :]
-            target = np.stack([target_depth, target_volume], axis=1)
+            g.area_denorm = torch.tensor(sd["area_denorm"], dtype=torch.float)
+            g.current_water_depth_denorm = torch.tensor(
+                current_water_depth_denorm, dtype=torch.float
+            )
+            g.current_volume_denorm = torch.tensor(
+                current_volume_denorm, dtype=torch.float
+            )
+            g.water_depth_std = torch.tensor(
+                [self.dynamic_stats["water_depth"]["std"]], dtype=torch.float
+            )
+            g.volume_std = torch.tensor(
+                [self.dynamic_stats["volume"]["std"]], dtype=torch.float
+            )
+            g.next_inflow = torch.tensor(
+                [dyn["inflow_hydrograph"][anchor_time + 1]], dtype=torch.float
+            )
+            g.next_precipitation = torch.tensor(
+                [dyn["precipitation"][anchor_time + 1]], dtype=torch.float
+            )
 
-            # Create the graph with PyG.
-            src, dst = sd["edge_index"]
-            edges = torch.stack([torch.tensor(src), torch.tensor(dst)], dim=0).long()
-            g = pyg.data.Data(edge_index=edges)
-            g.edge_attr = torch.tensor(sd["edge_features"], dtype=torch.float)
-            g.x = torch.tensor(node_features, dtype=torch.float)
-            g.y = torch.tensor(target, dtype=torch.float)
+            if self.noise_type == "pushforward":
+                pushforward_target = np.stack(
+                    [
+                        dyn["water_depth"][anchor_time + 2, :]
+                        - dyn["water_depth"][anchor_time + 1, :],
+                        dyn["volume"][anchor_time + 2, :]
+                        - dyn["volume"][anchor_time + 1, :],
+                    ],
+                    axis=1,
+                )
+                g.y_pushforward = torch.tensor(pushforward_target, dtype=torch.float)
 
-            # Determine if physics data should be returned.
-            need_physics = self.return_physics or (self.noise_type == "pushforward")
-            if need_physics:
-                # Compute physics data in the denormalized domain.
-                past_volume = float(np.sum(dyn["volume"][prev_time, :]))
-                future_volume = (
-                    float(np.sum(dyn["volume"][target_time + 1, :]))
-                    if (target_time + 1 < dyn["volume"].shape[0])
-                    else float(np.sum(dyn["volume"][target_time, :]))
+            if self.return_physics:
+                inflow_mean = self.dynamic_stats["inflow_hydrograph"]["mean"]
+                inflow_std = self.dynamic_stats["inflow_hydrograph"]["std"]
+                precip_mean = self.dynamic_stats["precipitation"]["mean"]
+                precip_std = self.dynamic_stats["precipitation"]["std"]
+                inflow_t = self.denormalize(
+                    dyn["inflow_hydrograph"][anchor_time], inflow_mean, inflow_std
                 )
-                avg_inflow_norm = float(
-                    (
-                        dyn["inflow_hydrograph"][prev_time]
-                        + dyn["inflow_hydrograph"][target_time]
-                    )
-                    / 2
+                inflow_t1 = self.denormalize(
+                    dyn["inflow_hydrograph"][anchor_time + 1], inflow_mean, inflow_std
                 )
-                avg_precip_norm = float(
-                    (
-                        dyn["precipitation"][prev_time]
-                        + dyn["precipitation"][target_time]
-                    )
-                    / 2
+                inflow_t2 = self.denormalize(
+                    dyn["inflow_hydrograph"][anchor_time + 2], inflow_mean, inflow_std
                 )
-                denorm_avg_inflow = (
-                    avg_inflow_norm * self.dynamic_stats["inflow_hydrograph"]["std"]
-                    + self.dynamic_stats["inflow_hydrograph"]["mean"]
+                precip_t = self.denormalize(
+                    dyn["precipitation"][anchor_time], precip_mean, precip_std
                 )
-                denorm_avg_precip = (
-                    avg_precip_norm * self.dynamic_stats["precipitation"]["std"]
-                    + self.dynamic_stats["precipitation"]["mean"]
+                precip_t1 = self.denormalize(
+                    dyn["precipitation"][anchor_time + 1], precip_mean, precip_std
                 )
-
-                # --- New: Compute next-step inflow and precipitation for physics loss term2 ---
-                if (target_time + 1) < dyn["inflow_hydrograph"].shape[0]:
-                    next_inflow_norm = dyn["inflow_hydrograph"][target_time + 1]
-                    next_precip_norm = dyn["precipitation"][target_time + 1]
-                else:
-                    next_inflow_norm = dyn["inflow_hydrograph"][target_time]
-                    next_precip_norm = dyn["precipitation"][target_time]
-                denorm_next_inflow = (
-                    next_inflow_norm * self.dynamic_stats["inflow_hydrograph"]["std"]
-                    + self.dynamic_stats["inflow_hydrograph"]["mean"]
+                precip_t2 = self.denormalize(
+                    dyn["precipitation"][anchor_time + 2], precip_mean, precip_std
                 )
-                denorm_next_precip = (
-                    next_precip_norm * self.dynamic_stats["precipitation"]["std"]
-                    + self.dynamic_stats["precipitation"]["mean"]
+                future_volume_denorm = self.denormalize(
+                    dyn["volume"][anchor_time + 2, :],
+                    self.dynamic_stats["volume"]["mean"],
+                    self.dynamic_stats["volume"]["std"],
                 )
 
-                # Build the complete physics data dictionary.
-                full_physics_data = {
-                    "flow_future": float(
-                        future_flow * self.dynamic_stats["inflow_hydrograph"]["std"]
-                        + self.dynamic_stats["inflow_hydrograph"]["mean"]
-                    ),
-                    "precip_future": float(
-                        future_precip * self.dynamic_stats["precipitation"]["std"]
-                        + self.dynamic_stats["precipitation"]["mean"]
-                    ),
-                    "past_volume": past_volume,
-                    "future_volume": future_volume,
-                    "avg_inflow": denorm_avg_inflow,
-                    "avg_precipitation": denorm_avg_precip,
-                    "next_inflow": denorm_next_inflow,
-                    "next_precip": denorm_next_precip,
-                    "volume_mean": float(self.dynamic_stats["volume"]["mean"]),
-                    "volume_std": float(self.dynamic_stats["volume"]["std"]),
-                    "inflow_mean": float(
-                        self.dynamic_stats["inflow_hydrograph"]["mean"]
-                    ),
-                    "inflow_std": float(self.dynamic_stats["inflow_hydrograph"]["std"]),
-                    "precip_mean": float(self.dynamic_stats["precipitation"]["mean"]),
-                    "precip_std": float(self.dynamic_stats["precipitation"]["std"]),
-                    "num_nodes": float(sd["xy_coords"].shape[0]),
-                    "area_sum": float(np.sum(sd["area_denorm"])),
-                    "infiltration_area_sum": float(
-                        np.sum(
-                            self.denormalize(
-                                sd["infiltration"],
-                                self.static_stats["infiltration"]["mean"],
-                                self.static_stats["infiltration"]["std"],
-                            )
-                            * sd["area_denorm"]
+                g.physics_current_total_volume = torch.tensor(
+                    [float(np.sum(current_volume_denorm))], dtype=torch.float
+                )
+                g.physics_future_total_volume = torch.tensor(
+                    [float(np.sum(future_volume_denorm))], dtype=torch.float
+                )
+                g.physics_avg_net_source = torch.tensor(
+                    [
+                        float(
+                            0.5 * (inflow_t + inflow_t1)
+                            + 0.5 * (precip_t + precip_t1) * sd["effective_rain_area_sum"]
                         )
-                    )
-                    / 100.0,
-                }
-                # For pushforward noise without full physics data requested.
-                if not self.return_physics and self.noise_type == "pushforward":
-                    physics_data = {
-                        "flow_future": full_physics_data["flow_future"],
-                        "precip_future": full_physics_data["precip_future"],
-                        "next_inflow": full_physics_data["next_inflow"],
-                        "next_precip": full_physics_data["next_precip"],
-                    }
-                else:
-                    physics_data = full_physics_data
-                return g, physics_data
-            else:
-                return g
-        else:
-            # Test mode: Each sample returns a graph and a rollout data dictionary.
-            dyn = self.dynamic_data[idx]
-            node_features, _, _ = self.create_node_features(
-                sd["xy_coords"],
-                sd["area"],
-                sd["elevation"],
-                sd["slope"],
-                sd["aspect"],
-                sd["curvature"],
-                sd["manning"],
-                sd["flow_accum"],
-                sd["infiltration"],
-                dyn["water_depth"][0 : self.n_time_steps, :],
-                dyn["volume"][0 : self.n_time_steps, :],
-                dyn["precipitation"],
-                0,
-                self.n_time_steps,
-                dyn["inflow_hydrograph"],
-            )
-            src, dst = sd["edge_index"]
-            edges = torch.stack([torch.tensor(src), torch.tensor(dst)], dim=0).long()
-            g = pyg.data.Data(edge_index=edges)
-            g.edge_attr = torch.tensor(sd["edge_features"], dtype=torch.float)
-            g.x = torch.tensor(node_features, dtype=torch.float)
-            rollout_data = {
-                "inflow": torch.tensor(
-                    dyn["inflow_hydrograph"][
-                        self.n_time_steps : self.n_time_steps + self.rollout_length
                     ],
                     dtype=torch.float,
-                ),
-                "precipitation": torch.tensor(
-                    dyn["precipitation"][
-                        self.n_time_steps : self.n_time_steps + self.rollout_length
+                )
+                g.physics_next_avg_net_source = torch.tensor(
+                    [
+                        float(
+                            0.5 * (inflow_t1 + inflow_t2)
+                            + 0.5 * (precip_t1 + precip_t2) * sd["effective_rain_area_sum"]
+                        )
                     ],
                     dtype=torch.float,
+                )
+                g.total_area = torch.tensor([sd["total_area"]], dtype=torch.float)
+
+            return g
+
+        dyn = self.dynamic_data[idx]
+        anchor_time = self.n_time_steps - 1
+        node_features = self.create_node_features(
+            mesh_features=sd["mesh_features"],
+            water_depth=dyn["water_depth"][0 : self.n_time_steps, :],
+            volume=dyn["volume"][0 : self.n_time_steps, :],
+            inflow_value=float(dyn["inflow_hydrograph"][anchor_time]),
+            precipitation_value=float(dyn["precipitation"][anchor_time]),
+        )
+        g = pyg.data.Data(
+            edge_index=edges,
+            edge_attr=edge_attr,
+            x=torch.tensor(node_features, dtype=torch.float),
+        )
+        g.area_denorm = torch.tensor(sd["area_denorm"], dtype=torch.float)
+        g.current_water_depth_denorm = torch.tensor(
+            self.denormalize(
+                dyn["water_depth"][anchor_time, :],
+                self.dynamic_stats["water_depth"]["mean"],
+                self.dynamic_stats["water_depth"]["std"],
+            ).reshape(-1, 1),
+            dtype=torch.float,
+        )
+        g.current_volume_denorm = torch.tensor(
+            self.denormalize(
+                dyn["volume"][anchor_time, :],
+                self.dynamic_stats["volume"]["mean"],
+                self.dynamic_stats["volume"]["std"],
+            ).reshape(-1, 1),
+            dtype=torch.float,
+        )
+        g.water_depth_std = torch.tensor(
+            [self.dynamic_stats["water_depth"]["std"]], dtype=torch.float
+        )
+        g.volume_std = torch.tensor(
+            [self.dynamic_stats["volume"]["std"]], dtype=torch.float
+        )
+        rollout_slice = slice(self.n_time_steps, self.n_time_steps + self.rollout_length)
+        rollout_data = {
+            "inflow": torch.tensor(
+                dyn["inflow_hydrograph"][rollout_slice], dtype=torch.float
+            ),
+            "precipitation": torch.tensor(
+                dyn["precipitation"][rollout_slice], dtype=torch.float
+            ),
+            "water_depth_gt": torch.tensor(
+                self.denormalize(
+                    dyn["water_depth"][rollout_slice, :],
+                    self.dynamic_stats["water_depth"]["mean"],
+                    self.dynamic_stats["water_depth"]["std"],
                 ),
-                "water_depth_gt": torch.tensor(
-                    dyn["water_depth"][
-                        self.n_time_steps : self.n_time_steps + self.rollout_length
-                    ],
-                    dtype=torch.float,
+                dtype=torch.float,
+            ),
+            "volume_gt": torch.tensor(
+                self.denormalize(
+                    dyn["volume"][rollout_slice, :],
+                    self.dynamic_stats["volume"]["mean"],
+                    self.dynamic_stats["volume"]["std"],
                 ),
-                "volume_gt": torch.tensor(
-                    dyn["volume"][
-                        self.n_time_steps : self.n_time_steps + self.rollout_length
-                    ],
-                    dtype=torch.float,
-                ),
-            }
-            return g, rollout_data
+                dtype=torch.float,
+            ),
+        }
+        return g, rollout_data
 
     def __len__(self) -> int:
         """Return the number of samples in the dataset."""
@@ -837,7 +940,8 @@ class HydroGraphDataset(Dataset):
             stats (dict): Dictionary of normalization statistics.
             filename (str): Filename to save the stats.
         """
-        filepath = os.path.join(self.data_dir, filename)
+        os.makedirs(self.stats_dir, exist_ok=True)
+        filepath = os.path.join(self.stats_dir, filename)
         with open(filepath, "w") as f:
             json.dump(stats, f)
 
@@ -851,7 +955,7 @@ class HydroGraphDataset(Dataset):
         Returns:
             dict: Normalization statistics.
         """
-        filepath = os.path.join(self.data_dir, filename)
+        filepath = os.path.join(self.stats_dir, filename)
         with open(filepath, "r") as f:
             stats = json.load(f)
         return stats
@@ -986,84 +1090,49 @@ class HydroGraphDataset(Dataset):
 
     def create_node_features(
         self,
-        xy_coords: np.ndarray,
-        area: np.ndarray,
-        elevation: np.ndarray,
-        slope: np.ndarray,
-        aspect: np.ndarray,
-        curvature: np.ndarray,
-        manning: np.ndarray,
-        flow_accum: np.ndarray,
-        infiltration: np.ndarray,
+        mesh_features: np.ndarray,
         water_depth: np.ndarray,
         volume: np.ndarray,
-        precipitation_data: np.ndarray,
-        time_step: int,
-        n_time_steps: int,
-        inflow_hydrograph: np.ndarray,
-    ) -> (np.ndarray, float, float):
+        inflow_value: float,
+        precipitation_value: float,
+    ) -> np.ndarray:
         """
         Create node features by combining static and dynamic data.
 
         Args:
-            xy_coords (np.ndarray): Spatial coordinates.
-            area (np.ndarray): Normalized area.
-            elevation (np.ndarray): Normalized elevation.
-            slope (np.ndarray): Normalized slope.
-            aspect (np.ndarray): Normalized aspect.
-            curvature (np.ndarray): Normalized curvature.
-            manning (np.ndarray): Normalized Manning coefficient.
-            flow_accum (np.ndarray): Normalized flow accumulation.
-            infiltration (np.ndarray): Normalized infiltration.
+            mesh_features (np.ndarray): Static mesh features shared by all samples.
             water_depth (np.ndarray): Dynamic water depth data (time x nodes).
             volume (np.ndarray): Dynamic volume data (time x nodes).
-            precipitation_data (np.ndarray): Dynamic precipitation data.
-            time_step (int): Starting time step.
-            n_time_steps (int): Number of time steps in the window.
-            inflow_hydrograph (np.ndarray): Dynamic inflow data.
+            inflow_value (float): Normalized inflow at the current anchor time.
+            precipitation_value (float): Normalized precipitation at the current anchor time.
 
         Returns:
-            Tuple:
-                - features (np.ndarray): Node feature matrix.
-                - future_inflow (float): Future inflow at time_step+n_time_steps.
-                - future_precip (float): Future precipitation at time_step+n_time_steps.
+            np.ndarray: Node feature matrix.
         """
-        # Apply noise if required (excluding "none" and "pushforward").
+        water_depth_window = np.array(water_depth, copy=True)
+        volume_window = np.array(volume, copy=True)
+
+        # Apply noise to the local window only.
         if self.noise_type not in ["none", "pushforward"]:
-            window_slice = slice(time_step, time_step + n_time_steps)
-            water_depth[window_slice, :] = self.apply_noise_to_feature(
-                water_depth[window_slice, :], self.noise_type, self.noise_std
+            water_depth_window = self.apply_noise_to_feature(
+                water_depth_window, self.noise_type, self.noise_std
             )
-            volume[window_slice, :] = self.apply_noise_to_feature(
-                volume[window_slice, :], self.noise_type, self.noise_std
+            volume_window = self.apply_noise_to_feature(
+                volume_window, self.noise_type, self.noise_std
             )
-        num_nodes = xy_coords.shape[0]
-        # Create static copies of inflow and precipitation for each node.
-        flow_hydrograph_current_step = np.full(
-            (num_nodes, 1), inflow_hydrograph[time_step]
-        )
-        precip_current_step = np.full((num_nodes, 1), precipitation_data[time_step])
-        # Concatenate all features horizontally.
-        features = np.hstack(
+
+        num_nodes = mesh_features.shape[0]
+        flow_feature = np.full((num_nodes, 1), inflow_value)
+        precip_feature = np.full((num_nodes, 1), precipitation_value)
+        return np.hstack(
             [
-                xy_coords,
-                area,
-                elevation,
-                slope,
-                aspect,
-                curvature,
-                manning,
-                flow_accum,
-                infiltration,
-                flow_hydrograph_current_step,
-                precip_current_step,
-                water_depth.T,
-                volume.T,
+                mesh_features,
+                flow_feature,
+                precip_feature,
+                water_depth_window.T,
+                volume_window.T,
             ]
         )
-        future_inflow = inflow_hydrograph[time_step + n_time_steps]
-        future_precip = precipitation_data[time_step + n_time_steps]
-        return features, future_inflow, future_precip
 
     def create_edge_features(
         self, xy_coords: np.ndarray, edge_index: np.ndarray

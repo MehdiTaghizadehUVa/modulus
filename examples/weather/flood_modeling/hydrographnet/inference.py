@@ -14,40 +14,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
-"""
-rollout_script.py
-
-A standalone script that uses Hydra to load the shared configuration,
-instantiates the test dataset and the trained MeshGraphKAN model, loads the checkpoint,
-and performs an iterative rollout for each test hydrograph sample.
-For each sample, a fancy four-panel animation is generated that shows:
-  1. Prediction (node colors represent predicted actual water depth)
-  2. Ground Truth (node colors represent actual water depth)
-  3. Absolute Error (difference between prediction and ground truth)
-  4. RMSE curve over time (updated with each rollout step)
-
-The model checkpoint is loaded using the provided load_checkpoint utility.
-"""
+"""HydroGraphNet inference and autoregressive rollout."""
 
 import os
-import torch
+
 import hydra
-import networkx as nx
-import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-from omegaconf import DictConfig, OmegaConf
+import matplotlib.pyplot as plt
+import networkx as nx
+import torch
 from hydra.utils import to_absolute_path
-
-# Import the load_checkpoint utility from Modulus Launch.
-from physicsnemo.utils import load_checkpoint
-
-# Import the dataset and model.
-from physicsnemo.datapipes.gnn.hydrographnet_dataset import HydroGraphDataset
-from physicsnemo.models.meshgraphnet.meshgraphkan import MeshGraphKAN
-
-# For converting PyG graph to networkx.
+from omegaconf import DictConfig, OmegaConf
 from torch_geometric.utils import to_networkx
+
+from physicsnemo.datapipes.gnn.hydrographnet_dataset import HydroGraphDataset
+from physicsnemo.utils import load_checkpoint
+from utils import build_model, get_batch_vector, roll_feature_window
 
 
 def create_animation(
@@ -58,52 +40,42 @@ def create_animation(
     output_path,
     time_per_step=20 / 60,
 ):
-    """
-    Create a four-panel animation for one hydrograph rollout.
+    """Create a four-panel rollout animation in physical water-depth units."""
 
-    Parameters:
-      rollout_predictions: list of predicted actual water depth tensors (each shape: [num_nodes])
-      ground_truth: list of ground truth water depth tensors (each shape: [num_nodes])
-      initial_graph: the initial PyG graph sample (used for node positions and edges)
-      rmse_list: list of RMSE values computed at each rollout step
-      output_path: file path to save the animation (e.g. a GIF file)
-      time_per_step: simulation time (in hours) corresponding to each rollout step.
-    """
-    # Set professional style.
     plt.rcParams["font.family"] = "Times New Roman"
     plt.rcParams["font.size"] = 20
 
-    # Create figure and extra axes for colorbars.
     fig, axes = plt.subplots(2, 2, figsize=(30, 30))
     cax1 = fig.add_axes([0.05, 0.53, 0.02, 0.35])
     cax2 = fig.add_axes([0.95, 0.53, 0.02, 0.35])
     cax3 = fig.add_axes([0.05, 0.1, 0.02, 0.35])
 
     num_frames = len(rollout_predictions)
-    # Use the first two columns of node features for positions.
     init_node_feats = initial_graph.x
     pos = {
         i: (init_node_feats[i, 0].item(), init_node_feats[i, 1].item())
         for i in range(init_node_feats.shape[0])
     }
 
-    # Compute global color scaling based on both predictions and ground truth.
     all_vals = torch.cat(rollout_predictions + ground_truth)
     vmin_global = all_vals.min().item()
     vmax_global = all_vals.max().item()
+    error_vmax = max(
+        torch.max(torch.abs(pred - gt)).item()
+        for pred, gt in zip(rollout_predictions, ground_truth)
+    )
+
+    graph_cpu = initial_graph.cpu()
+    nx_graph = to_networkx(graph_cpu).to_undirected()
 
     def update(frame):
         for ax in axes.flat:
             ax.clear()
         current_time = (frame + 1) * time_per_step
 
-        # Panel 1: Prediction.
         pred_vals = rollout_predictions[frame].cpu().numpy()
-        # Ensure the graph is on CPU before converting.
-        g_pred = to_networkx(initial_graph)
-        g_pred = g_pred.to_undirected()
         nodes_pred = nx.draw_networkx_nodes(
-            g_pred,
+            nx_graph,
             pos,
             node_color=pred_vals,
             node_size=250,
@@ -113,16 +85,15 @@ def create_animation(
             vmax=vmax_global,
             node_shape="s",
         )
-        nx.draw_networkx_edges(g_pred, pos, alpha=0.5, ax=axes[0, 0])
-        axes[0, 0].set_title(f"Time {current_time:.2f} Hours - Prediction", fontsize=24)
+        nx.draw_networkx_edges(nx_graph, pos, alpha=0.5, ax=axes[0, 0])
+        axes[0, 0].set_title(
+            f"Time {current_time:.2f} Hours - Prediction (m)", fontsize=24
+        )
         fig.colorbar(nodes_pred, cax=cax1)
 
-        # Panel 2: Ground Truth.
         gt_vals = ground_truth[frame].cpu().numpy()
-        g_gt = to_networkx(initial_graph)
-        g_gt = g_gt.to_undirected()
         nodes_gt = nx.draw_networkx_nodes(
-            g_gt,
+            nx_graph,
             pos,
             node_color=gt_vals,
             node_size=250,
@@ -132,35 +103,30 @@ def create_animation(
             vmax=vmax_global,
             node_shape="s",
         )
-        nx.draw_networkx_edges(g_gt, pos, alpha=0.5, ax=axes[0, 1])
+        nx.draw_networkx_edges(nx_graph, pos, alpha=0.5, ax=axes[0, 1])
         axes[0, 1].set_title(
-            f"Time {current_time:.2f} Hours - Ground Truth", fontsize=24
+            f"Time {current_time:.2f} Hours - Ground Truth (m)", fontsize=24
         )
         fig.colorbar(nodes_gt, cax=cax2)
 
-        # Panel 3: Absolute Error.
-        abs_error = torch.abs(rollout_predictions[frame] - ground_truth[frame])
-        abs_vals = abs_error.cpu().numpy()
-        g_error = to_networkx(initial_graph.cpu())
-        g_error = g_error.to_undirected()
+        abs_vals = torch.abs(rollout_predictions[frame] - ground_truth[frame]).cpu().numpy()
         nodes_error = nx.draw_networkx_nodes(
-            g_error,
+            nx_graph,
             pos,
             node_color=abs_vals,
             node_size=250,
-            cmap=plt.cm.viridis,
+            cmap=plt.cm.inferno,
             ax=axes[1, 0],
-            vmin=vmin_global,
-            vmax=vmax_global,
+            vmin=0.0,
+            vmax=error_vmax,
             node_shape="s",
         )
-        nx.draw_networkx_edges(g_error, pos, alpha=0.5, ax=axes[1, 0])
+        nx.draw_networkx_edges(nx_graph, pos, alpha=0.5, ax=axes[1, 0])
         axes[1, 0].set_title(
-            f"Time {current_time:.2f} Hours - Absolute Error", fontsize=24
+            f"Time {current_time:.2f} Hours - Absolute Error (m)", fontsize=24
         )
         fig.colorbar(nodes_error, cax=cax3)
 
-        # Panel 4: RMSE Curve.
         times = [(i + 1) * time_per_step for i in range(frame + 1)]
         axes[1, 1].plot(
             times,
@@ -171,7 +137,7 @@ def create_animation(
         )
         axes[1, 1].set_title("RMSE Over Time", fontsize=24)
         axes[1, 1].set_xlabel("Time (Hours)", fontsize=24)
-        axes[1, 1].set_ylabel("RMSE", fontsize=24)
+        axes[1, 1].set_ylabel("RMSE (m)", fontsize=24)
         axes[1, 1].legend(fontsize=20)
         axes[1, 1].grid(True)
 
@@ -183,19 +149,16 @@ def create_animation(
 
 @hydra.main(version_base="1.3", config_path="conf", config_name="config")
 def main(cfg: DictConfig):
-    """
-    Main function that loads the configuration, instantiates the test dataset and model,
-    loads the checkpoint using load_checkpoint, performs iterative rollout, and generates animations.
-    """
+    """Load a trained HydroGraphNet checkpoint and run autoregressive rollout."""
+
     device = torch.device(
         cfg.get("device", "cuda") if torch.cuda.is_available() else "cpu"
     )
-    rollout_length = cfg.get(
-        "num_test_time_steps", 10
-    )  # Rollout length (number of future steps)
+    rollout_length = cfg.get("num_test_time_steps", 10)
     n_time_steps = cfg.get("n_time_steps", 2)
     prefix = cfg.get("prefix", "M80")
-    data_dir = cfg.get("test_dir")
+    test_dir = cfg.get("test_dir")
+    stats_dir = cfg.get("stats_dir", cfg.get("data_dir"))
     test_ids_file = cfg.get("test_ids_file", "test.txt")
     ckpt_path = cfg.get("ckpt_path")
     anim_output_dir = cfg.get("animation_output_dir", "animations")
@@ -203,9 +166,9 @@ def main(cfg: DictConfig):
 
     print("Configuration:\n", OmegaConf.to_yaml(cfg))
 
-    # Instantiate the test dataset.
     test_dataset = HydroGraphDataset(
-        data_dir=data_dir,
+        data_dir=test_dir,
+        stats_dir=stats_dir,
         prefix=prefix,
         n_time_steps=n_time_steps,
         hydrograph_ids_file=test_ids_file,
@@ -215,14 +178,7 @@ def main(cfg: DictConfig):
     )
     print(f"Loaded test dataset with {len(test_dataset)} hydrographs.")
 
-    # Instantiate the model.
-    num_input_features = cfg.get("num_input_features", 16)
-    num_edge_features = cfg.get("num_edge_features", 3)
-    num_output_features = cfg.get("num_output_features", 2)
-    model = MeshGraphKAN(num_input_features, num_edge_features, num_output_features)
-    model.to(device)
-
-    # Load model checkpoint using the provided load_checkpoint utility.
+    model = build_model(cfg).to(device)
     epoch_loaded = load_checkpoint(
         to_absolute_path(ckpt_path),
         models=model,
@@ -236,104 +192,59 @@ def main(cfg: DictConfig):
 
     all_rmse_all = []
 
-    # Loop over each test hydrograph.
-    for idx in range(len(test_dataset)):
-        g, rollout_data = test_dataset[idx]
-        g = g.to(device)
-        edge_features = g.edge_attr.to(device)
-        X_current = g.x.to(device)  # Expected shape: [num_nodes, 16]
-        num_nodes = X_current.size(0)
+    with torch.no_grad():
+        for idx in range(len(test_dataset)):
+            g, rollout_data = test_dataset[idx]
+            g = g.to(device)
+            batch = get_batch_vector(g)
+            edge_features = g.edge_attr
+            x_iter = g.x.clone()
+            current_wd = g.current_water_depth_denorm.clone()
+            current_vol = g.current_volume_denorm.clone()
+            wd_std = g.water_depth_std.reshape(-1)[0]
+            vol_std = g.volume_std.reshape(-1)[0]
 
-        rollout_preds = []  # To store predicted actual water depth values for each step.
-        ground_truth_list = []  # To store ground truth water depth values.
-        rmse_list = []  # RMSE at each rollout step.
+            inflow_seq = rollout_data["inflow"].to(device)
+            precip_seq = rollout_data["precipitation"].to(device)
+            wd_gt_seq = rollout_data["water_depth_gt"].to(device)
 
-        # Rollout data tensors.
-        # Note: inflow_seq is a 1D tensor of length rollout_length.
-        inflow_seq = rollout_data["inflow"].to(device)
-        precip_seq = rollout_data["precipitation"].to(device)
-        wd_gt_seq = rollout_data["water_depth_gt"].to(device)
+            rollout_preds = []
+            ground_truth_list = []
+            rmse_list = []
 
-        X_iter = X_current.clone()
+            for step in range(rollout_length):
+                pred = model(x_iter, edge_features, g)
+                current_wd = current_wd + pred[:, 0:1] * wd_std
+                current_vol = current_vol + pred[:, 1:2] * vol_std
 
-        for t in range(rollout_length):
-            # Split into static and dynamic parts.
-            static_part = X_iter[
-                :, :12
-            ]  # columns 0-11: static features (including flow/precip)
-            water_depth_window = X_iter[
-                :, 12 : 12 + n_time_steps
-            ]  # e.g., columns 12-13 for n_time_steps=2
-            volume_window = X_iter[
-                :, 12 + n_time_steps : 12 + 2 * n_time_steps
-            ]  # e.g., columns 14-15
+                pred_depth = current_wd.squeeze(1)
+                gt_depth = wd_gt_seq[step]
+                rollout_preds.append(pred_depth.cpu())
+                ground_truth_list.append(gt_depth.cpu())
+                rmse_list.append(torch.sqrt(torch.mean((pred_depth - gt_depth) ** 2)).item())
 
-            # Use the full dynamic window as input.
-            X_input = torch.cat(
-                [static_part, water_depth_window, volume_window], dim=1
-            )  # shape remains 16
+                x_iter = roll_feature_window(
+                    x_iter,
+                    pred,
+                    inflow_seq[step : step + 1],
+                    precip_seq[step : step + 1],
+                    n_time_steps,
+                    batch,
+                )
 
-            # Predict the differences (delta).
-            pred = model(X_input, edge_features, g)  # shape: (num_nodes, 2)
-            new_wd = water_depth_window[:, -1:] + pred[:, 0:1]
-            new_vol = volume_window[:, -1:] + pred[:, 1:2]
+            all_rmse_all.append(rmse_list)
+            mean_rmse_sample = sum(rmse_list) / len(rmse_list)
+            sample_id = test_dataset.dynamic_data[idx].get("hydro_id", idx)
+            print(f"Hydrograph {sample_id}: Mean RMSE = {mean_rmse_sample:.4f} m")
 
-            # Update dynamic window: drop the oldest time step and append the new prediction.
-            water_depth_updated = torch.cat([water_depth_window[:, 1:], new_wd], dim=1)
-            volume_updated = torch.cat([volume_window[:, 1:], new_vol], dim=1)
-
-            # Update static part: since inflow_seq and precip_seq are 1D,
-            # we unsqueeze and expand them to shape (num_nodes, 1).
-            new_flow = inflow_seq[t].unsqueeze(0).expand(num_nodes, 1)
-            new_precip = precip_seq[t].unsqueeze(0).expand(num_nodes, 1)
-            static_part_updated = static_part.clone()
-            static_part_updated[:, 10:12] = torch.cat([new_flow, new_precip], dim=1)
-
-            # Form updated X_iter.
-            X_iter = torch.cat(
-                [static_part_updated, water_depth_updated, volume_updated], dim=1
-            )
-
-            # Save the predicted actual water depth.
-            rollout_preds.append(new_wd.squeeze(1).detach().cpu())
-            ground_truth_list.append(wd_gt_seq[t].detach().cpu())
-
-            # Compute RMSE for this rollout step.
-            rmse = torch.sqrt(
-                torch.mean((new_wd.squeeze(1) - wd_gt_seq[t]) ** 2)
-            ).item()
-            rmse_list.append(rmse)
-
-        all_rmse_all.append(rmse_list)
-        mean_rmse_sample = sum(rmse_list) / len(rmse_list)
-        sample_id = test_dataset.dynamic_data[idx].get("hydro_id", idx)
-        print(f"Hydrograph {sample_id}: Mean RMSE = {mean_rmse_sample:.4f}")
-
-        anim_filename = os.path.join(anim_output_dir, f"animation_{sample_id}.gif")
-        create_animation(rollout_preds, ground_truth_list, g, rmse_list, anim_filename)
+            anim_filename = os.path.join(anim_output_dir, f"animation_{sample_id}.gif")
+            create_animation(rollout_preds, ground_truth_list, g.cpu(), rmse_list, anim_filename)
 
     all_rmse_tensor = torch.tensor(all_rmse_all)
     overall_mean_rmse = torch.mean(all_rmse_tensor, dim=0)
-    overall_std_rmse = torch.std(all_rmse_tensor, dim=0)
-    print("Overall Mean RMSE over rollout steps:", overall_mean_rmse)
-    print("Overall Std RMSE over rollout steps:", overall_std_rmse)
-
-    timesteps = [(i + 1) * (20 / 60) for i in range(rollout_length)]
-    plt.figure(figsize=(10, 6))
-    plt.plot(timesteps, overall_mean_rmse.numpy(), label="Mean RMSE", linewidth=3)
-    plt.fill_between(
-        timesteps,
-        (overall_mean_rmse - overall_std_rmse).numpy(),
-        (overall_mean_rmse + overall_std_rmse).numpy(),
-        alpha=0.3,
-        label="± Std",
-    )
-    plt.xlabel("Time (Hours)", fontsize=20)
-    plt.ylabel("RMSE (Water Depth)", fontsize=20)
-    plt.title("Overall RMSE Curve Over Rollout", fontsize=24)
-    plt.legend(fontsize=16)
-    plt.grid(True)
-    plt.show()
+    overall_std_rmse = torch.std(all_rmse_tensor, dim=0, unbiased=False)
+    print("Overall Mean RMSE over rollout steps (m):", overall_mean_rmse)
+    print("Overall Std RMSE over rollout steps (m):", overall_std_rmse)
 
 
 if __name__ == "__main__":
