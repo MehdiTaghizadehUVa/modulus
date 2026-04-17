@@ -40,6 +40,7 @@ from typing import Any, Dict, Literal, Optional, Union
 
 import torch
 import torch.nn as nn
+import torch.distributed as torch_dist
 from torch.cuda.amp import GradScaler, autocast
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import Optimizer
@@ -47,12 +48,16 @@ from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-import physicsnemo
 from physicsnemo.distributed import DistributedManager
 from physicsnemo.launch.logging import PythonLogger, RankZeroLoggingWrapper
-from physicsnemo.launch.utils.checkpoint import load_checkpoint, save_checkpoint
-
-import fsspec
+from physicsnemo.utils.checkpoint import load_checkpoint, save_checkpoint
+from utils.checkpointing import (
+    resolve_checkpoint_epoch,
+    resolve_legacy_neuralop_checkpoint_name,
+    validate_checkpoint_files,
+    write_best_checkpoint_metadata,
+)
+from utils.runtime import set_loader_epoch
 
 # Optional wandb import
 try:
@@ -63,102 +68,33 @@ except ImportError:
     _WANDB_AVAILABLE = False
 
 
-def _has_pytorch_submodules(model: nn.Module) -> bool:
-    r"""
-    Check if a PhysicsNeMo Module contains PyTorch submodules that would prevent saving.
-    
-    PhysicsNeMo's Module.save() doesn't support saving modules that contain
-    PyTorch submodules (they must be converted using Module.from_torch).
-    This helper detects such cases so we can save them as PyTorch models instead.
-    
-    Note: With Option 1 implementation, GINOWrapper now auto-converts PyTorch models
-    at initialization, so this check is mainly for backward compatibility and
-    other edge cases.
-    
-    Parameters
-    ----------
-    model : nn.Module
-        Model to check.
-        
-    Returns
-    -------
-    bool
-        True if model is a PhysicsNeMo Module containing PyTorch submodules.
-    """
-    if not isinstance(model, physicsnemo.models.Module):
+def _supports_tqdm_output(stream: Any) -> bool:
+    r"""Return True when tqdm can safely write progress updates to the stream."""
+    if stream is None:
         return False
-    
-    # Check if any direct submodules are PyTorch modules (not PhysicsNeMo modules)
-    # Skip checking inner_model of converted wrappers (they're intentionally PyTorch)
-    for name, child in model.named_children():
-        # Skip inner_model - it's a PyTorch model wrapped by PhysicsNeMo, which is fine
-        if name == 'inner_model':
-            continue
-        if isinstance(child, torch.nn.Module) and not isinstance(child, physicsnemo.models.Module):
-            return True
+    isatty = getattr(stream, "isatty", None)
+    if callable(isatty):
+        try:
+            return bool(isatty())
+        except OSError:
+            return False
     return False
 
 
-def save_model_checkpoint(
-    model: nn.Module,
-    save_dir: Union[str, Path],
-    epoch: int,
-    metadata: Optional[Dict[str, Any]] = None,
-    model_parallel_rank: int = 0,
-) -> bool:
-    r"""
-    Save a model checkpoint, handling both PhysicsNeMo modules and wrappers with PyTorch submodules.
-    
-    This function intelligently saves models:
-    - Pure PhysicsNeMo modules: Returns False (caller should use save_checkpoint normally)
-    - Wrappers with PyTorch submodules: Saves state_dict as PyTorch model, returns True
-    
-    Parameters
-    ----------
-    model : nn.Module
-        Model to save. Can be a PhysicsNeMo Module or a wrapper.
-    save_dir : str or Path
-        Directory to save checkpoint.
-    epoch : int
-        Epoch number for checkpoint filename.
-    metadata : Dict[str, Any], optional
-        Additional metadata (not used here, but kept for API consistency).
-    model_parallel_rank : int, optional
-        Model parallel rank for distributed training. Default is 0.
-        
-    Returns
-    -------
-    bool
-        True if model was saved as PyTorch model (caller should skip model in save_checkpoint),
-        False if model should be saved via save_checkpoint normally.
-    """
-    save_dir = Path(save_dir)
-    save_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Handle DDP-wrapped models
-    if isinstance(model, DDP):
-        model = model.module
-    
-    # Check if we need to save as PyTorch model (due to PyTorch submodules)
-    save_as_pytorch = _has_pytorch_submodules(model)
-    
-    if save_as_pytorch:
-        # Save model state_dict manually as PyTorch model
-        # This bypasses PhysicsNeMo's Module.save() which doesn't support PyTorch submodules
-        model_name = model.__class__.__name__
-        
-        # Create filename matching PhysicsNeMo format: {model_name}.{rank}.{epoch}.pt
-        model_filename = f"{model_name}.{model_parallel_rank}.{epoch}.pt"
-        model_path = save_dir / model_filename
-        
-        # Save model state_dict
-        protocol = fsspec.utils.get_protocol(str(save_dir))
-        fs = fsspec.filesystem(protocol)
-        with fs.open(str(model_path), "wb") as fp:
-            torch.save(model.state_dict(), fp)
-        return True  # Indicate model was saved separately
-    
-    return False  # Model should be saved via save_checkpoint
+def _safe_tqdm_postfix(progress_bar: Any, values: Dict[str, str]) -> None:
+    r"""Best-effort tqdm postfix update that degrades cleanly in captured consoles."""
+    if not hasattr(progress_bar, "set_postfix"):
+        return
+    try:
+        progress_bar.set_postfix(values)
+    except OSError:
+        disable = getattr(progress_bar, "disable", None)
+        if disable is not None:
+            progress_bar.disable = True
+    except ValueError:
+        disable = getattr(progress_bar, "disable", None)
+        if disable is not None:
+            progress_bar.disable = True
 
 
 class NeuralOperatorTrainer:
@@ -256,21 +192,21 @@ class NeuralOperatorTrainer:
         verbose: bool = False,
         logger: Optional[Union[PythonLogger, RankZeroLoggingWrapper]] = None,
         scaler: Optional[GradScaler] = None,
+        checkpoint_stage: str = "training",
     ) -> None:
         # Model and training configuration
         self.model = model
         self.n_epochs = n_epochs
-        self.eval_interval = eval_interval
+        self.eval_interval = int(eval_interval)
+        if self.eval_interval <= 0:
+            raise ValueError("eval_interval must be a positive integer.")
         self.log_output = log_output
         self.verbose = verbose
         self.data_processor = data_processor
 
         # Mixed precision configuration
         self.mixed_precision = mixed_precision
-        if mixed_precision and scaler is None:
-            self.scaler = GradScaler()
-        else:
-            self.scaler = scaler
+        self.scaler = scaler
 
         # Device configuration
         if device is None:
@@ -283,6 +219,15 @@ class NeuralOperatorTrainer:
             self.device = torch.device(device)
         else:
             self.device = device
+
+        if self.mixed_precision and self.scaler is None:
+            if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+                self.scaler = torch.amp.GradScaler(
+                    "cuda",
+                    enabled=self.device.type == "cuda",
+                )
+            else:
+                self.scaler = GradScaler(enabled=self.device.type == "cuda")
 
         # Determine autocast device type
         if isinstance(self.device, torch.device):
@@ -310,6 +255,7 @@ class NeuralOperatorTrainer:
         self.optimizer: Optional[Optimizer] = None
         self.scheduler: Optional[_LRScheduler] = None
         self.regularizer: Optional[Any] = None
+        self.checkpoint_stage = checkpoint_stage
 
         # Checkpointing configuration
         self.save_every: Optional[int] = None
@@ -318,6 +264,55 @@ class NeuralOperatorTrainer:
 
         # Metrics accumulation for wandb
         self.wandb_epoch_metrics: Optional[Dict[str, Any]] = None
+
+    def _distributed_active(self) -> bool:
+        return (
+            DistributedManager.is_initialized()
+            and DistributedManager().distributed
+            and torch_dist.is_available()
+            and torch_dist.is_initialized()
+        )
+
+    def _all_reduce_scalar(self, value: Union[int, float]) -> float:
+        if not self._distributed_active():
+            return float(value)
+        tensor = torch.tensor(float(value), device=self.device, dtype=torch.float64)
+        torch_dist.all_reduce(tensor, op=torch_dist.ReduceOp.SUM)
+        return float(tensor.item())
+
+    def _infer_batch_size(
+        self,
+        sample: Optional[Dict[str, Any]] = None,
+        out: Optional[torch.Tensor] = None,
+    ) -> int:
+        if sample is not None:
+            for key in ("y", "target", "x", "dynamic", "boundary", "static", "geometry"):
+                value = sample.get(key)
+                if isinstance(value, torch.Tensor):
+                    if key == "geometry" and value.ndim == 2:
+                        continue
+                    if value.ndim == 0:
+                        continue
+                    return int(value.shape[0])
+        if isinstance(out, torch.Tensor) and out.ndim > 0:
+            return int(out.shape[0])
+        return 1
+
+    def _wrap_model_for_distributed(self, model: nn.Module) -> nn.Module:
+        if not DistributedManager.is_initialized():
+            return model
+        dist_manager = DistributedManager()
+        if not dist_manager.distributed or isinstance(model, DDP):
+            return model
+
+        ddp_kwargs = {
+            "broadcast_buffers": dist_manager.broadcast_buffers,
+            "find_unused_parameters": dist_manager.find_unused_parameters,
+        }
+        if self.device.type == "cuda":
+            ddp_kwargs["device_ids"] = [dist_manager.local_rank]
+            ddp_kwargs["output_device"] = dist_manager.local_rank
+        return DDP(model, **ddp_kwargs)
 
     def train(
         self,
@@ -448,16 +443,11 @@ class NeuralOperatorTrainer:
         self.model = self.model.to(self.device)
 
         # Setup distributed training if available
-        if DistributedManager.is_initialized():
+        self.model = self._wrap_model_for_distributed(self.model)
+        if self.verbose and DistributedManager.is_initialized():
             dist_manager = DistributedManager()
-            if dist_manager.distributed:
-                self.model = DDP(
-                    self.model,
-                    device_ids=[dist_manager.local_rank],
-                    output_device=dist_manager.local_rank,
-                )
-                if self.verbose and dist_manager.rank == 0:
-                    self.logger.info(f"Using distributed training (rank {dist_manager.rank})")
+            if dist_manager.distributed and dist_manager.rank == 0:
+                self.logger.info(f"Using distributed training (rank {dist_manager.rank})")
 
         # Move data processor to device
         if self.data_processor is not None:
@@ -501,6 +491,9 @@ class NeuralOperatorTrainer:
         
         for epoch in epoch_range:
             self.epoch = epoch
+            set_loader_epoch(train_loader, epoch)
+            for loader in test_loaders.values():
+                set_loader_epoch(loader, epoch)
 
             # Train for one epoch
             train_metrics = self._train_one_epoch(epoch, train_loader, training_loss)
@@ -522,8 +515,8 @@ class NeuralOperatorTrainer:
                     self.best_metric_value = eval_metrics[save_best]
                     self._save_checkpoint(save_dir, is_best=True)
 
-            # Save checkpoint at interval
-            if self.save_every is not None and epoch % self.save_every == 0:
+            should_save_latest = self.save_every is None or epoch % self.save_every == 0
+            if should_save_latest:
                 self._save_checkpoint(save_dir, is_best=False)
 
         return epoch_metrics
@@ -569,17 +562,14 @@ class NeuralOperatorTrainer:
             dist_manager = DistributedManager()
             is_rank_zero = dist_manager.rank == 0
         loader_iter = train_loader
-        if is_rank_zero and self.verbose:
+        if is_rank_zero and self.verbose and _supports_tqdm_output(sys.stdout):
             loader_iter = tqdm(train_loader, desc=f"Epoch {epoch+1}/{self.n_epochs}", unit="batch", leave=False)
 
+        n_batches = 0
         for idx, sample in enumerate(loader_iter):
-            loss = self._train_one_batch(idx, sample, training_loss)
-            
-            # Track number of samples in batch
-            if isinstance(sample.get("y"), torch.Tensor):
-                n_samples += sample["y"].shape[0]
-            else:
-                n_samples += 1
+            loss, processed_sample = self._train_one_batch(idx, sample, training_loss)
+            n_samples += self._infer_batch_size(processed_sample)
+            n_batches += 1
             
             # Backward pass with optional mixed precision
             if self.mixed_precision and self.scaler is not None:
@@ -598,9 +588,16 @@ class NeuralOperatorTrainer:
             
             # Update progress bar with current loss
             if is_rank_zero and self.verbose and hasattr(loader_iter, 'set_postfix'):
-                loader_iter.set_postfix({'loss': f'{loss.item():.6f}'})
+                _safe_tqdm_postfix(loader_iter, {'loss': f'{loss.item():.6f}'})
 
-        # Update learning rate scheduler
+        train_err = self._all_reduce_scalar(train_err)
+        avg_loss = self._all_reduce_scalar(avg_loss)
+        n_samples = self._all_reduce_scalar(n_samples)
+        n_batches = self._all_reduce_scalar(n_batches)
+        if self.regularizer is not None:
+            avg_lasso_loss = self._all_reduce_scalar(avg_lasso_loss)
+
+        # Update learning rate scheduler using global metrics
         if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
             self.scheduler.step(train_err)
         else:
@@ -609,7 +606,7 @@ class NeuralOperatorTrainer:
         epoch_train_time = default_timer() - t1
 
         # Normalize metrics
-        train_err /= len(train_loader)
+        train_err /= n_batches if n_batches > 0 else 1
         avg_loss /= n_samples if n_samples > 0 else 1
         if self.regularizer is not None:
             avg_lasso_loss /= n_samples if n_samples > 0 else 1
@@ -640,7 +637,9 @@ class NeuralOperatorTrainer:
             "epoch_train_time": epoch_train_time,
         }
 
-    def _train_one_batch(self, idx: int, sample: Dict[str, Any], training_loss: Any) -> torch.Tensor:
+    def _train_one_batch(
+        self, idx: int, sample: Dict[str, Any], training_loss: Any
+    ) -> tuple[torch.Tensor, Dict[str, Any]]:
         r"""
         Train on a single batch.
 
@@ -655,8 +654,8 @@ class NeuralOperatorTrainer:
 
         Returns
         -------
-        torch.Tensor
-            Training loss tensor.
+        tuple[torch.Tensor, Dict[str, Any]]
+            Training loss tensor and the processed sample used for sample counting.
         """
         self.optimizer.zero_grad(set_to_none=True)
         if self.regularizer is not None:
@@ -711,7 +710,7 @@ class NeuralOperatorTrainer:
         if self.regularizer is not None:
             loss = loss + self.regularizer.loss
 
-        return loss
+        return loss, sample
 
     def _evaluate_all(
         self,
@@ -792,6 +791,12 @@ class NeuralOperatorTrainer:
         if self.data_processor is not None:
             self.data_processor.eval()
 
+        if mode == "autoregression":
+            raise NotImplementedError(
+                "Trainer-side autoregressive evaluation is not supported for FloodForecaster. "
+                "Use inference/rollout.py for rollout evaluation."
+            )
+
         # Initialize error tracking
         errors = {f"{log_prefix}_{loss_name}": 0.0 for loss_name in eval_losses.keys()}
 
@@ -819,15 +824,8 @@ class NeuralOperatorTrainer:
             for idx, sample in enumerate(loader_iter):
                 return_output = idx == len(data_loader) - 1
 
-                # Track samples before processing
-                if "y" in sample:
-                    if isinstance(sample["y"], torch.Tensor):
-                        n_samples += sample["y"].shape[0]
-                    else:
-                        n_samples += 1
-
                 if mode == "single_step":
-                    eval_step_losses, outs = self._eval_one_batch(
+                    eval_step_losses, outs, batch_size = self._eval_one_batch(
                         sample, eval_losses, return_output=return_output
                     )
                 elif mode == "autoregression":
@@ -837,15 +835,19 @@ class NeuralOperatorTrainer:
                         return_output=return_output,
                         max_steps=max_steps,
                     )
+                    batch_size = self._infer_batch_size(out=outs)
                 else:
                     raise ValueError(f"Unknown evaluation mode: {mode}")
+                n_samples += batch_size
 
                 # Accumulate losses
                 for loss_name, val_loss in eval_step_losses.items():
                     errors[f"{log_prefix}_{loss_name}"] += val_loss
 
+        n_samples = self._all_reduce_scalar(n_samples)
         # Normalize by number of samples
         for key in errors.keys():
+            errors[key] = self._all_reduce_scalar(errors[key])
             errors[key] /= n_samples if n_samples > 0 else 1
 
         # Log outputs to wandb if requested
@@ -856,7 +858,7 @@ class NeuralOperatorTrainer:
 
     def _eval_one_batch(
         self, sample: Dict[str, Any], eval_losses: Dict[str, Any], return_output: bool = False
-    ) -> tuple[Dict[str, float], Optional[torch.Tensor]]:
+    ) -> tuple[Dict[str, float], Optional[torch.Tensor], int]:
         r"""
         Evaluate on a single batch (single step mode).
 
@@ -871,8 +873,8 @@ class NeuralOperatorTrainer:
 
         Returns
         -------
-        tuple[Dict[str, float], Optional[torch.Tensor]]
-            Dictionary of losses and optional model outputs.
+        tuple[Dict[str, float], Optional[torch.Tensor], int]
+            Dictionary of losses, optional model outputs, and batch size.
         """
         # Preprocess data
         if self.data_processor is not None:
@@ -896,10 +898,12 @@ class NeuralOperatorTrainer:
             val_loss = loss_fn(out, **sample)
             eval_step_losses[loss_name] = val_loss.item() if isinstance(val_loss, torch.Tensor) else val_loss
 
+        batch_size = self._infer_batch_size(sample=sample, out=out)
+
         if return_output:
-            return eval_step_losses, out
+            return eval_step_losses, out, batch_size
         else:
-            return eval_step_losses, None
+            return eval_step_losses, None, batch_size
 
     def _eval_one_batch_autoreg(
         self,
@@ -1051,11 +1055,6 @@ class NeuralOperatorTrainer:
         r"""
         Save training checkpoint using PhysicsNeMo checkpoint system.
 
-        This method handles both pure PhysicsNeMo modules and wrapper modules
-        that contain PyTorch submodules (like GINOWrapper). For wrappers with
-        PyTorch submodules, it saves the model's state_dict as a PyTorch model
-        instead of using PhysicsNeMo's Module.save().
-
         Parameters
         ----------
         save_dir : str or Path
@@ -1063,6 +1062,9 @@ class NeuralOperatorTrainer:
         is_best : bool, optional
             Whether this is the best model checkpoint. Default is False.
         """
+        if save_dir is None:
+            return
+
         # Only save on rank 0 in distributed training
         if DistributedManager.is_initialized():
             dist_manager = DistributedManager()
@@ -1077,51 +1079,36 @@ class NeuralOperatorTrainer:
             "epoch": self.epoch,
             "is_best": is_best,
             "best_metric_value": self.best_metric_value if is_best else None,
+            "stage": self.checkpoint_stage,
         }
 
-        # Determine model parallel rank (for distributed training compatibility)
-        model_parallel_rank = 0
-        if DistributedManager.is_initialized():
-            dist_manager = DistributedManager()
-            if "model_parallel" in dist_manager.group_names:
-                model_parallel_rank = dist_manager.group_rank("model_parallel")
-        
         # Use actual epoch number for checkpoint filename
         # Best model is tracked via metadata, not filename
         save_epoch = self.epoch
         
-        # Handle model saving separately if it contains PyTorch submodules
         model_to_save = self.model
         if isinstance(self.model, DDP):
             model_to_save = self.model.module
-        
-        save_as_pytorch = _has_pytorch_submodules(model_to_save)
-        
-        if save_as_pytorch:
-            # Save model state_dict manually as PyTorch model
-            model_name = model_to_save.__class__.__name__
-            model_filename = f"{model_name}.{model_parallel_rank}.{save_epoch}.pt"
-            model_path = save_dir / model_filename
-            
-            protocol = fsspec.utils.get_protocol(str(save_dir))
-            fs = fsspec.filesystem(protocol)
-            with fs.open(str(model_path), "wb") as fp:
-                torch.save(model_to_save.state_dict(), fp)
-            
-            if self.verbose:
-                self.logger.info(f"Saved model state_dict as PyTorch model: {model_path}")
-        
-        # Save training state (optimizer, scheduler, etc.) using PhysicsNeMo
-        # Include model only if it's not a PyTorch wrapper
+
         save_checkpoint(
             path=str(save_dir),
-            models=None if save_as_pytorch else model_to_save,
+            models=model_to_save,
             optimizer=self.optimizer,
             scheduler=self.scheduler,
             scaler=self.scaler,
             epoch=save_epoch,
             metadata=metadata,
         )
+
+        if is_best and self.save_best is not None:
+            write_best_checkpoint_metadata(
+                save_dir,
+                stage=self.checkpoint_stage,
+                epoch=save_epoch,
+                metric_name=self.save_best,
+                metric_value=self.best_metric_value,
+                models=model_to_save,
+            )
 
         if self.verbose:
             checkpoint_type = "best model" if is_best else "checkpoint"
@@ -1145,19 +1132,45 @@ class NeuralOperatorTrainer:
         if not resume_dir.exists():
             raise FileNotFoundError(f"Checkpoint directory not found: {resume_dir}")
 
-        # Load checkpoint using PhysicsNeMo system
-        # Load latest checkpoint (epoch=None loads most recent)
         metadata_dict = {}
-        resume_epoch = load_checkpoint(
-            path=str(resume_dir),
-            models=self.model,
-            optimizer=self.optimizer,
-            scheduler=self.scheduler,
-            scaler=self.scaler,
-            epoch=None,  # Load latest
-            metadata_dict=metadata_dict,
-            device=self.device,
-        )
+        resume_epoch = None
+        try:
+            resolved_epoch = resolve_checkpoint_epoch(resume_dir, "latest")
+            validate_checkpoint_files(resume_dir, self.model, resolved_epoch)
+            load_checkpoint(
+                path=str(resume_dir),
+                models=self.model,
+                optimizer=self.optimizer,
+                scheduler=self.scheduler,
+                scaler=self.scaler,
+                epoch=resolved_epoch,
+                metadata_dict=metadata_dict,
+                device=self.device,
+            )
+            resume_epoch = resolved_epoch
+        except (FileNotFoundError, ValueError) as physicsnemo_error:
+            save_name = resolve_legacy_neuralop_checkpoint_name(resume_dir, "latest")
+            if save_name is None:
+                raise FileNotFoundError(
+                    f"Could not resume from {resume_dir}: {physicsnemo_error}"
+                ) from physicsnemo_error
+
+            from neuralop.training.training_state import load_training_state
+
+            model_for_load = self.model.module if isinstance(self.model, DDP) else self.model
+            if hasattr(model_for_load, "gino"):
+                model_for_load = model_for_load.gino
+                if hasattr(model_for_load, "inner_model"):
+                    model_for_load = model_for_load.inner_model
+
+            _, self.optimizer, self.scheduler, _, legacy_epoch = load_training_state(
+                save_dir=resume_dir,
+                save_name=save_name,
+                model=model_for_load,
+                optimizer=self.optimizer,
+                scheduler=self.scheduler,
+            )
+            resume_epoch = legacy_epoch
 
         # Update training state
         if resume_epoch is not None and resume_epoch > self.start_epoch:

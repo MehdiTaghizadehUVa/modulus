@@ -23,16 +23,11 @@ rollout prediction, and metric computation.
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-import tempfile
-import shutil
+from unittest.mock import MagicMock
 
 import pytest
 import torch
-import torch.nn as nn
 import numpy as np
-
-import physicsnemo
 
 # Conditionally include CUDA in device parametrization only if available
 _DEVICES = ["cpu"]
@@ -63,7 +58,6 @@ spec.loader.exec_module(rollout_module)
 sys.modules["inference"].rollout = rollout_module
 
 from inference.rollout import compute_csi, rollout_prediction
-from data_processing import GINOWrapper
 
 
 @pytest.fixture
@@ -234,5 +228,121 @@ def test_compute_csi_edge_cases(device):
     # All ground truth above threshold, no predictions
     csi = compute_csi(0.5, np.array([0.0, 0.0]), np.array([1.0, 1.0]))
     assert csi == 0.0
+
+
+def test_rollout_prediction_updates_history_and_handles_missing_cell_area(tmp_path):
+    """Rollout should shift dynamic/boundary history correctly and tolerate missing cell area."""
+
+    class IdentityNormalizer:
+        def to(self, device):
+            return self
+
+        def inverse_transform(self, x):
+            return x
+
+    class RecordingModel(torch.nn.Module):
+        def __init__(self, predictions):
+            super().__init__()
+            self.predictions = predictions
+            self.calls = []
+
+        def forward(self, input_geom, latent_queries, output_queries, x, **kwargs):
+            self.calls.append(x.detach().cpu())
+            pred = self.predictions[len(self.calls) - 1].to(x.device)
+            return pred.unsqueeze(0)
+
+    geometry = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.float32)
+    static = torch.tensor([[10.0, 20.0], [30.0, 40.0]], dtype=torch.float32)
+    boundary = torch.tensor(
+        [
+            [[10.0], [20.0]],
+            [[11.0], [21.0]],
+            [[12.0], [22.0]],
+            [[13.0], [23.0]],
+        ],
+        dtype=torch.float32,
+    )
+    dynamic = torch.tensor(
+        [
+            [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+            [[7.0, 8.0, 9.0], [10.0, 11.0, 12.0]],
+            [[13.0, 14.0, 15.0], [16.0, 17.0, 18.0]],
+            [[19.0, 20.0, 21.0], [22.0, 23.0, 24.0]],
+        ],
+        dtype=torch.float32,
+    )
+    predictions = [
+        torch.tensor([[100.0, 101.0, 102.0], [103.0, 104.0, 105.0]], dtype=torch.float32),
+        torch.tensor([[200.0, 201.0, 202.0], [203.0, 204.0, 205.0]], dtype=torch.float32),
+    ]
+
+    dataset = [
+        {
+            "run_id": "run_001",
+            "geometry": geometry,
+            "static": static,
+            "boundary": boundary,
+            "dynamic": dynamic,
+            "query_points": torch.zeros(1, 1, 2, dtype=torch.float32),
+        }
+    ]
+    model = RecordingModel(predictions)
+    norm = IdentityNormalizer()
+
+    recorded = {}
+
+    def _record_volume_plot(wd_gt, wd_pred, cell_area, dt, figures_path, run_id):
+        recorded["cell_area"] = cell_area
+
+    monkeypatches = {
+        "generate_publication_maps": lambda *args, **kwargs: None,
+        "generate_max_value_maps": lambda *args, **kwargs: None,
+        "generate_combined_analysis_maps": lambda *args, **kwargs: (0.0, 0.0, 0.0, 0.0),
+        "plot_volume_conservation": _record_volume_plot,
+        "plot_conditional_error_analysis": lambda *args, **kwargs: None,
+        "create_rollout_animation": lambda *args, **kwargs: None,
+        "plot_aggregated_scalar_metrics": lambda *args, **kwargs: None,
+        "plot_event_magnitude_analysis": lambda *args, **kwargs: None,
+    }
+    for name, replacement in monkeypatches.items():
+        setattr(rollout_module, name, replacement)
+
+    rollout_prediction(
+        model=model,
+        rollout_dataset=dataset,
+        rollout_length=2,
+        history_steps=2,
+        dynamic_norm=norm,
+        target_norm=norm,
+        boundary_norm=norm,
+        device="cpu",
+        skip_before_timestep=0,
+        dt=60.0,
+        out_dir=str(tmp_path),
+        logger=MagicMock(),
+    )
+
+    assert len(model.calls) == 2
+    first_call = model.calls[0][0]
+    second_call = model.calls[1][0]
+
+    assert torch.allclose(first_call[:, 2:4], torch.tensor([[10.0, 11.0], [20.0, 21.0]]))
+    assert torch.allclose(second_call[:, 2:4], torch.tensor([[11.0, 12.0], [21.0, 22.0]]))
+    assert torch.allclose(
+        first_call[:, 4:],
+        torch.tensor(
+            [[1.0, 2.0, 3.0, 7.0, 8.0, 9.0], [4.0, 5.0, 6.0, 10.0, 11.0, 12.0]]
+        ),
+    )
+    assert torch.allclose(
+        second_call[:, 4:],
+        torch.tensor(
+            [
+                [7.0, 8.0, 9.0, 100.0, 101.0, 102.0],
+                [10.0, 11.0, 12.0, 103.0, 104.0, 105.0],
+            ]
+        ),
+    )
+    assert recorded["cell_area"] is None
 
 

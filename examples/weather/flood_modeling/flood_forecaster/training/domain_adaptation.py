@@ -32,6 +32,7 @@ import os
 import sys
 import math
 import random
+from contextlib import nullcontext
 from timeit import default_timer
 from pathlib import Path
 from typing import Optional, Dict, Union, List, Tuple, Any
@@ -39,66 +40,49 @@ from itertools import cycle
 
 import torch
 import torch.nn as nn
-from torch.autograd import Function
-from torch.utils.data import DataLoader, random_split
+import torch.distributed as torch_dist
+from torch.cuda.amp import GradScaler, autocast
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from neuralop.training import AdamW
 from neuralop.losses import LpLoss
 
-import physicsnemo
-from physicsnemo.models.meta import ModelMetaData
 from physicsnemo.distributed import DistributedManager
-from physicsnemo.launch.utils.checkpoint import save_checkpoint, load_checkpoint
+from physicsnemo.utils.checkpoint import load_checkpoint, save_checkpoint
 
 
-def _sanitize_args_for_json(args_dict: Dict[str, Any]) -> Dict[str, Any]:
-    r"""
-    Recursively convert non-JSON-serializable objects in args_dict to serializable formats.
-    
-    This function handles:
-    - DictConfig -> dict (using OmegaConf.to_container)
-    - Other non-serializable objects are left as-is (will cause error if encountered)
-    
-    Parameters
-    ----------
-    args_dict : Dict[str, Any]
-        Dictionary to sanitize (modified in-place).
-    
-    Returns
-    -------
-    Dict[str, Any]
-        Sanitized dictionary (same object, modified in-place).
-    """
+def _supports_tqdm_output(stream: Any) -> bool:
+    r"""Return True when tqdm can safely render to the given stream."""
+    if stream is None:
+        return False
+    isatty = getattr(stream, "isatty", None)
+    if callable(isatty):
+        try:
+            return bool(isatty())
+        except OSError:
+            return False
+    return False
+
+
+def _safe_tqdm_postfix(progress_bar: Any, values: Dict[str, str]) -> None:
+    r"""Best-effort tqdm postfix update for non-interactive or captured consoles."""
+    if not hasattr(progress_bar, "set_postfix"):
+        return
     try:
-        from omegaconf import DictConfig, OmegaConf
-        has_omegaconf = True
-    except ImportError:
-        has_omegaconf = False
-    
-    def _convert_value(value: Any) -> Any:
-        """Recursively convert DictConfig objects to dicts."""
-        if has_omegaconf and isinstance(value, DictConfig):
-            # Convert DictConfig to dict, resolving nested DictConfigs
-            return OmegaConf.to_container(value, resolve=True)
-        elif isinstance(value, dict):
-            # Recursively process dictionary values
-            return {k: _convert_value(v) for k, v in value.items()}
-        elif isinstance(value, (list, tuple)):
-            # Recursively process list/tuple elements
-            converted = [_convert_value(item) for item in value]
-            return type(value)(converted)  # Preserve list/tuple type
-        else:
-            # Other types (int, float, str, bool, None) are already JSON-serializable
-            return value
-    
-    # Process the dictionary recursively
-    for key, value in list(args_dict.items()):
-        args_dict[key] = _convert_value(value)
-    
-    return args_dict
+        progress_bar.set_postfix(values)
+    except OSError:
+        disable = getattr(progress_bar, "disable", None)
+        if disable is not None:
+            progress_bar.disable = True
+    except ValueError:
+        disable = getattr(progress_bar, "disable", None)
+        if disable is not None:
+            progress_bar.disable = True
+
 
 from data_processing import LpLossWrapper
+from models import CNNDomainClassifier
 
 # Try to import comm for distributed training, fallback if not available
 try:
@@ -113,295 +97,21 @@ except ImportError:
             return 0
     comm = _DummyComm()
 
-from datasets import FloodDatasetWithQueryPoints, NormalizedDataset
-from utils.normalization import collect_all_fields, stack_and_fit_transform
+from datasets import FloodDatasetWithQueryPoints, LazyNormalizedDataset
+from utils.checkpointing import (
+    resolve_checkpoint_epoch,
+    resolve_legacy_neuralop_checkpoint_name,
+    validate_checkpoint_files,
+    write_best_checkpoint_metadata,
+)
+from utils.runtime import (
+    create_loader_from_config,
+    resolve_amp_autocast_enabled,
+    resolve_eval_interval,
+    set_loader_epoch,
+    split_dataset,
+)
 from training.pretraining import create_scheduler
-from training.trainer import save_model_checkpoint, _has_pytorch_submodules
-
-
-class GradientReversalFunction(Function):
-    r"""
-    Custom autograd function for gradient reversal layer.
-    
-    This function implements the gradient reversal layer (GRL) used in adversarial
-    domain adaptation. During forward pass, it returns the input unchanged. During
-    backward pass, it negates and scales the gradients by lambda.
-    
-    Attributes
-    ----------
-    lambda_ : float
-        Scaling factor for gradient reversal (typically scheduled during training).
-    """
-    
-    @staticmethod
-    def forward(ctx, x: torch.Tensor, lambda_: float) -> torch.Tensor:
-        r"""
-        Forward pass: return input unchanged.
-
-        Parameters
-        ----------
-        ctx : Any
-            Context object to store lambda for backward pass.
-        x : torch.Tensor
-            Input tensor of arbitrary shape.
-        lambda_ : float
-            Scaling factor for gradient reversal.
-
-        Returns
-        -------
-        torch.Tensor
-            Cloned input tensor (same shape as input).
-        """
-        ctx.lambda_ = lambda_
-        return x.clone()
-
-    @staticmethod
-    def backward(ctx, grad_output: torch.Tensor) -> Tuple[torch.Tensor, None]:
-        r"""
-        Backward pass: negate and scale gradients.
-
-        Parameters
-        ----------
-        ctx : Any
-            Context object containing lambda.
-        grad_output : torch.Tensor
-            Gradient from next layer.
-
-        Returns
-        -------
-        Tuple[torch.Tensor, None]
-            Tuple of (negated and scaled gradient, None for lambda).
-        """
-        return grad_output.neg().mul(ctx.lambda_), None
-
-
-class GradientReversal(physicsnemo.Module):
-    r"""
-    Gradient reversal layer module for adversarial domain adaptation.
-    
-    This module wraps the GradientReversalFunction to provide a learnable
-    gradient reversal layer. The lambda parameter can be dynamically updated
-    during training to schedule the strength of adversarial training.
-    
-    Parameters
-    ----------
-    lambda_max : float, optional, default=1.0
-        Maximum lambda value (typically 1.0).
-
-    Forward
-    -------
-    x : torch.Tensor
-        Input tensor of arbitrary shape.
-
-    Outputs
-    -------
-    torch.Tensor
-        Output tensor (same shape as input, but gradients will be reversed).
-    
-    Attributes
-    ----------
-    lambda_ : float
-        Current scaling factor for gradient reversal.
-    """
-    
-    def __init__(self, lambda_max: float = 1.0):
-        r"""
-        Initialize gradient reversal layer.
-
-        Parameters
-        ----------
-        lambda_max : float, optional, default=1.0
-            Maximum lambda value (typically 1.0).
-        """
-        super().__init__(meta=ModelMetaData(name="GradientReversal"))
-        self.lambda_ = lambda_max
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        r"""
-        Forward pass through gradient reversal layer.
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input tensor of arbitrary shape.
-
-        Returns
-        -------
-        torch.Tensor
-            Output tensor (same shape as input, but gradients will be reversed).
-        """
-        ### Input validation
-        # Skip validation when running under torch.compile for performance
-        if not torch.compiler.is_compiling():
-            if not isinstance(x, torch.Tensor):
-                raise ValueError(
-                    f"Expected input to be torch.Tensor, got {type(x)}"
-                )
-            if x.numel() == 0:
-                raise ValueError(
-                    f"Expected non-empty input tensor, got tensor with shape {tuple(x.shape)}"
-                )
-        
-        return GradientReversalFunction.apply(x, self.lambda_)
-
-    def set_lambda(self, val: float) -> None:
-        r"""
-        Update lambda value for gradient reversal.
-
-        Parameters
-        ----------
-        val : float
-            New lambda value.
-        """
-        self.lambda_ = val
-
-
-class CNNDomainClassifier(physicsnemo.Module):
-    r"""
-    CNN-based domain classifier for adversarial domain adaptation.
-    
-    This classifier takes latent features from the GINO model and predicts
-    whether they come from the source or target domain. The gradient reversal
-    layer ensures that the feature extractor learns domain-invariant features.
-    
-    Architecture:
-        - Gradient Reversal Layer (GRL)
-        - Convolutional layers (configurable)
-        - Adaptive average pooling
-        - Fully connected layer for binary classification
-
-    Parameters
-    ----------
-    in_channels : int
-        Number of input channels (should match fno_hidden_channels).
-    lambda_max : float
-        Maximum lambda for gradient reversal layer.
-    da_cfg : Dict[str, Any]
-        Configuration dict with keys:
-        - conv_layers: List of dicts with 'out_channels', 'kernel_size', 'pool_size'
-        - fc_dim: Output dimension of final fully connected layer
-
-    Forward
-    -------
-    x : torch.Tensor
-        Input features of shape :math:`(B, C, H, W)` where :math:`B` is batch size,
-        :math:`C` is channels, and :math:`H, W` are spatial dimensions.
-
-    Outputs
-    -------
-    torch.Tensor
-        Logits for binary classification of shape :math:`(B, D_{fc})` where
-        :math:`D_{fc}` is the fully connected layer dimension.
-    """
-    
-    def __init__(self, in_channels: int, lambda_max: float, da_cfg: Dict[str, Any]):
-        r"""
-        Initialize domain classifier.
-
-        Parameters
-        ----------
-        in_channels : int
-            Number of input channels (should match fno_hidden_channels).
-        lambda_max : float
-            Maximum lambda for gradient reversal layer.
-        da_cfg : Dict[str, Any]
-            Configuration dict with keys:
-            - conv_layers: List of dicts with 'out_channels', 'kernel_size', 'pool_size'
-            - fc_dim: Output dimension of final fully connected layer
-
-        Raises
-        ------
-        ValueError
-            If required keys are missing from ``da_cfg`` or if conv_layers is empty.
-        """
-        # Convert DictConfig to regular dict if needed (for JSON serialization)
-        # This must be done BEFORE super().__init__() so PhysicsNeMo's __new__ captures
-        # the converted dict, not the DictConfig
-        # OmegaConf.to_container recursively converts nested DictConfigs to dicts
-        try:
-            from omegaconf import DictConfig, OmegaConf
-            if isinstance(da_cfg, DictConfig):
-                # Convert to regular dict, resolving all nested DictConfigs recursively
-                da_cfg = OmegaConf.to_container(da_cfg, resolve=True)
-        except ImportError:
-            # OmegaConf not available, assume da_cfg is already a dict
-            pass
-        except Exception:
-            # If conversion fails for any reason, try to manually convert
-            # This is a fallback in case OmegaConf.to_container doesn't work
-            if hasattr(da_cfg, '__dict__'):
-                # Try to convert manually
-                da_cfg = dict(da_cfg)
-        
-        super().__init__(meta=ModelMetaData(name="CNNDomainClassifier"))
-        
-        # CRITICAL: Sanitize _args to convert any DictConfig objects to regular dicts
-        # PhysicsNeMo's __new__ captures arguments before __init__ runs, so _args
-        # may contain DictConfig objects that need to be converted for JSON serialization
-        # We need to sanitize the entire _args structure, not just __args__
-        if hasattr(self, '_args'):
-            # Recursively sanitize the entire _args dictionary
-            # This will convert any DictConfig objects anywhere in the structure
-            _sanitize_args_for_json(self._args)
-        if not da_cfg.get("conv_layers"):
-            raise ValueError("da_cfg must contain 'conv_layers' list")
-        if "fc_dim" not in da_cfg:
-            raise ValueError("da_cfg must contain 'fc_dim'")
-            
-        self.grl = GradientReversal(lambda_max=lambda_max)
-        layers = []
-        c_in = in_channels
-        
-        for layer_spec in da_cfg["conv_layers"]:
-            out_channels = layer_spec["out_channels"]
-            kernel_size = layer_spec.get("kernel_size", 3)
-            pool_size = layer_spec.get("pool_size", 2)
-            
-            layers.extend([
-                nn.Conv2d(
-                    c_in, out_channels,
-                    kernel_size=kernel_size,
-                    padding=kernel_size // 2
-                ),
-                nn.ReLU(inplace=True),
-                nn.MaxPool2d(pool_size)
-            ])
-            c_in = out_channels
-            
-        layers.append(nn.AdaptiveAvgPool2d((1, 1)))
-        self.conv_net = nn.Sequential(*layers)
-        self.fc = nn.Linear(c_in, da_cfg["fc_dim"])
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        r"""
-        Forward pass through domain classifier.
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input features of shape :math:`(B, C, H, W)` where :math:`B` is batch size,
-            :math:`C` is channels, and :math:`H, W` are spatial dimensions.
-
-        Returns
-        -------
-        torch.Tensor
-            Logits for binary classification of shape :math:`(B, D_{fc})` where
-            :math:`D_{fc}` is the fully connected layer dimension.
-        """
-        ### Input validation
-        # Skip validation when running under torch.compile for performance
-        if not torch.compiler.is_compiling():
-            if x.ndim != 4:
-                raise ValueError(
-                    f"Expected 4D input tensor (B, C, H, W), got {x.ndim}D tensor "
-                    f"with shape {tuple(x.shape)}"
-                )
-        
-        # Apply gradient reversal, then conv layers, then flatten and classify
-        x = self.grl(x)  # (B, C, H, W)
-        x = self.conv_net(x)  # (B, C, 1, 1) after adaptive pooling
-        x = x.view(x.size(0), -1)  # (B, C)
-        return self.fc(x)  # (B, fc_dim)
 
 
 class DomainAdaptationTrainer:
@@ -453,6 +163,8 @@ class DomainAdaptationTrainer:
         data_processor: Optional[nn.Module],
         domain_classifier: nn.Module,
         device: Union[str, torch.device] = "cuda",
+        mixed_precision: bool = False,
+        eval_interval: int = 1,
         verbose: bool = True,
         logger: Optional[Any] = None,
         wandb_step_offset: int = 0,
@@ -481,10 +193,62 @@ class DomainAdaptationTrainer:
         self.data_processor = data_processor
         self.domain_classifier = domain_classifier
         self.device = device
+        self.mixed_precision = mixed_precision
         self.verbose = verbose
         self.logger = logger
         self.wandb_step_offset = wandb_step_offset
-        self._eval_interval = 1
+        self.eval_interval = eval_interval
+        self.checkpoint_stage = "adapt"
+        self.best_metric_name: Optional[str] = None
+        self.best_metric_value = float("inf")
+        if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+            self.scaler = torch.amp.GradScaler(
+                "cuda",
+                enabled=self.mixed_precision and torch.device(device).type == "cuda",
+            )
+        else:
+            self.scaler = GradScaler(enabled=self.mixed_precision and torch.device(device).type == "cuda")
+
+    def _distributed_active(self) -> bool:
+        return (
+            DistributedManager.is_initialized()
+            and DistributedManager().distributed
+            and torch_dist.is_available()
+            and torch_dist.is_initialized()
+        )
+
+    def _all_reduce_scalar(self, value: Union[int, float]) -> float:
+        if not self._distributed_active():
+            return float(value)
+        tensor = torch.tensor(float(value), device=self.device, dtype=torch.float64)
+        torch_dist.all_reduce(tensor, op=torch_dist.ReduceOp.SUM)
+        return float(tensor.item())
+
+    def _autocast_context(self):
+        if not self.mixed_precision:
+            return nullcontext()
+        if hasattr(torch.amp, "autocast") and torch.device(self.device).type == "cuda":
+            return torch.amp.autocast(
+                device_type=torch.device(self.device).type,
+                enabled=self.mixed_precision,
+            )
+        return nullcontext()
+
+    def _wrap_for_ddp(self, module: nn.Module) -> nn.Module:
+        if not DistributedManager.is_initialized():
+            return module
+        dist_manager = DistributedManager()
+        if not dist_manager.distributed or isinstance(module, torch.nn.parallel.DistributedDataParallel):
+            return module
+
+        ddp_kwargs = {
+            "broadcast_buffers": dist_manager.broadcast_buffers,
+            "find_unused_parameters": dist_manager.find_unused_parameters,
+        }
+        if torch.device(self.device).type == "cuda":
+            ddp_kwargs["device_ids"] = [dist_manager.local_rank]
+            ddp_kwargs["output_device"] = dist_manager.local_rank
+        return torch.nn.parallel.DistributedDataParallel(module, **ddp_kwargs)
         
     def train_domain_adaptation(
         self,
@@ -542,14 +306,15 @@ class DomainAdaptationTrainer:
         """
         self.model = self.model.to(self.device)
         self.domain_classifier = self.domain_classifier.to(self.device)
+        self.model = self._wrap_for_ddp(self.model)
+        self.domain_classifier = self._wrap_for_ddp(self.domain_classifier)
         if self.data_processor is not None:
             self.data_processor = self.data_processor.to(self.device)
-        
-        # Domain classification loss (binary cross-entropy)
+
         adv_criterion = nn.BCEWithLogitsLoss()
-        
-        # Optionally resume model and classifier state
-        start_epoch = 0
+        lambda_max = float(getattr(self.domain_classifier.module if isinstance(self.domain_classifier, torch.nn.parallel.DistributedDataParallel) else self.domain_classifier, "grl").lambda_)
+
+        start_epoch = -1
         if resume_from_dir is not None:
             start_epoch = self._resume_from_checkpoint(resume_from_dir, optimizer, scheduler)
         
@@ -560,6 +325,13 @@ class DomainAdaptationTrainer:
             
             # Try PhysicsNeMo format first (classifier saved as second model)
             try:
+                resolved_epoch = resolve_checkpoint_epoch(resume_classifier_dir, "latest")
+                validate_checkpoint_files(
+                    resume_classifier_dir,
+                    [self.domain_classifier],
+                    resolved_epoch,
+                    require_training_state=False,
+                )
                 metadata_dict = {}
                 load_checkpoint(
                     path=str(resume_classifier_dir),
@@ -567,7 +339,7 @@ class DomainAdaptationTrainer:
                     optimizer=None,
                     scheduler=None,
                     scaler=None,
-                    epoch=None,  # Load latest
+                    epoch=resolved_epoch,
                     metadata_dict=metadata_dict,
                     device=self.device,
                 )
@@ -599,6 +371,10 @@ class DomainAdaptationTrainer:
                     print(msg)
         
         val_loaders = val_loaders or {}
+        if "target_val" in val_loaders:
+            self.best_metric_name = "target_val"
+        elif val_loaders:
+            self.best_metric_name = next(iter(val_loaders))
         
         # Handle both single loader and list of loaders
         if not isinstance(tgt_loader, list):
@@ -624,6 +400,12 @@ class DomainAdaptationTrainer:
             print(msg2)
         
         for epoch in range(start_epoch + 1, adaptation_epochs):
+            set_loader_epoch(src_loader, epoch)
+            for loader in tgt_loaders:
+                set_loader_epoch(loader, epoch)
+            for loader in val_loaders.values():
+                set_loader_epoch(loader, epoch)
+
             self.on_epoch_start(epoch)
             self.model.train()
             self.domain_classifier.train()
@@ -631,26 +413,32 @@ class DomainAdaptationTrainer:
                 self.data_processor.train()
             
             total_reg, total_adv = 0.0, 0.0
-            
+            n_batches = 0
+             
             # Progress bar
             pbar = tqdm(
                 range(base_batches),
                 desc=f"DA Epoch {epoch}/{adaptation_epochs}",
-                disable=not self.verbose,
+                disable=not (self.verbose and _supports_tqdm_output(sys.stdout)),
                 file=sys.stdout
             )
-            
+             
             for batch_idx in pbar:
-                # Update GRL lambda (scheduled from 0 to lambda_max)
-                # Formula: lambda_val = 2.0 / (1.0 + exp(-10 * p)) - 1.0
-                # where p = (epoch * base_batches + batch_idx) / total_iters
-                p = (epoch * base_batches + batch_idx) / total_iters
-                lambda_val = 2.0 / (1.0 + math.exp(-10 * p)) - 1.0
-                self.domain_classifier.grl.set_lambda(lambda_val)
-                
+                grl_owner = (
+                    self.domain_classifier.module
+                    if isinstance(self.domain_classifier, torch.nn.parallel.DistributedDataParallel)
+                    else self.domain_classifier
+                )
+                if class_loss_weight > 0.0:
+                    progress = (epoch * base_batches + batch_idx) / max(total_iters - 1, 1)
+                    lambda_val = lambda_max * (2.0 / (1.0 + math.exp(-10 * progress)) - 1.0)
+                else:
+                    lambda_val = 0.0
+                grl_owner.grl.set_lambda(lambda_val)
+                 
                 # Randomly select one target domain from the list for this training step
                 chosen_tgt_iter = random.choice(tgt_iters)
-                
+                 
                 src_batch = next(src_iter)
                 tgt_batch = next(chosen_tgt_iter)
                 
@@ -662,196 +450,117 @@ class DomainAdaptationTrainer:
                     s = {k: v.to(self.device) for k, v in src_batch.items() if torch.is_tensor(v)}
                     t = {k: v.to(self.device) for k, v in tgt_batch.items() if torch.is_tensor(v)}
                 
-                # Forward pass with feature extraction
-                # Extract features using return_features=True
-                # Features should be in shape (batch, channels, H, W) for 2D
-                try:
-                    out_s, f_s = self.model(**s, return_features=True)
-                    out_t, f_t = self.model(**t, return_features=True)
-                except TypeError as e:
-                    # Fallback if model doesn't support return_features
-                    raise RuntimeError(
-                        "Model must support return_features=True for domain adaptation. "
-                        "Ensure model is wrapped with GINOWrapper."
-                    ) from e
-                
-                # Postprocess outputs (after feature extraction, before loss)
-                if self.data_processor is not None:
-                    out_s, s = self.data_processor.postprocess(out_s, s)
-                    out_t, t = self.data_processor.postprocess(out_t, t)
-                
-                # Regression loss on source and target
-                # Note: training_loss expects (y_pred, **sample) where sample contains 'y'
-                reg_loss = training_loss(out_s, **s) + training_loss(out_t, **t)
-                
-                # Prepare features for domain classifier
-                # Features from GINOWrapper are already in shape (batch, channels, H, W)
-                # Concatenate source and target features along batch dimension
-                if f_s.dim() != 4 or f_t.dim() != 4:
-                    raise ValueError(
-                        f"Expected 4D features (B, C, H, W), got f_s.shape={f_s.shape}, f_t.shape={f_t.shape}. "
-                        "Ensure GINOWrapper returns features in correct format."
-                    )
-                feats = torch.cat([f_s, f_t], dim=0)
-                
-                # Domain classification adversarial loss
-                logits = self.domain_classifier(feats).squeeze(1)
-                labels = torch.cat([
-                    torch.ones(f_s.size(0), device=self.device),
-                    torch.zeros(f_t.size(0), device=self.device)
-                ], dim=0).float()
-                adv_loss = adv_criterion(logits, labels)
-                
-                # Combined loss
-                loss = reg_loss + class_loss_weight * adv_loss
-                
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-                
+                optimizer.zero_grad(set_to_none=True)
+                with self._autocast_context():
+                    if class_loss_weight > 0.0:
+                        try:
+                            out_s, f_s = self.model(**s, return_features=True)
+                            out_t, f_t = self.model(**t, return_features=True)
+                        except TypeError as e:
+                            raise RuntimeError(
+                                "Model must support return_features=True for domain adaptation. "
+                                "Ensure model is wrapped with GINOWrapper."
+                            ) from e
+                    else:
+                        out_s = self.model(**s)
+                        out_t = self.model(**t)
+                        f_s = None
+                        f_t = None
+
+                    if self.data_processor is not None:
+                        out_s, s = self.data_processor.postprocess(out_s, s)
+                        out_t, t = self.data_processor.postprocess(out_t, t)
+
+                    reg_loss = training_loss(out_s, **s) + training_loss(out_t, **t)
+
+                    if class_loss_weight > 0.0:
+                        if f_s.dim() != 4 or f_t.dim() != 4:
+                            raise ValueError(
+                                f"Expected 4D features (B, C, H, W), got f_s.shape={f_s.shape}, f_t.shape={f_t.shape}. "
+                                "Ensure GINOWrapper returns features in correct format."
+                            )
+                        feats = torch.cat([f_s, f_t], dim=0)
+                        logits = self.domain_classifier(feats).squeeze(1)
+                        labels = torch.cat(
+                            [
+                                torch.ones(f_s.size(0), device=self.device),
+                                torch.zeros(f_t.size(0), device=self.device),
+                            ],
+                            dim=0,
+                        ).float()
+                        adv_loss = adv_criterion(logits, labels)
+                        loss = reg_loss + class_loss_weight * adv_loss
+                    else:
+                        adv_loss = torch.zeros((), device=self.device)
+                        loss = reg_loss
+
+                if self.scaler.is_enabled():
+                    self.scaler.scale(loss).backward()
+                    self.scaler.step(optimizer)
+                    self.scaler.update()
+                else:
+                    loss.backward()
+                    optimizer.step()
+
                 total_reg += reg_loss.item()
                 total_adv += adv_loss.item()
-                
+                n_batches += 1
+
                 # Update progress bar
                 if self.verbose:
-                    pbar.set_postfix({
+                    _safe_tqdm_postfix(pbar, {
                         'loss': f'{loss.item():.4f}',
                         'reg': f'{reg_loss.item():.4f}',
                         'adv': f'{adv_loss.item():.4f}',
                         'lambda': f'{lambda_val:.3f}'
                     })
             
-            # Step scheduler
+            total_reg = self._all_reduce_scalar(total_reg)
+            total_adv = self._all_reduce_scalar(total_adv)
+            n_batches = self._all_reduce_scalar(n_batches)
             if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                 scheduler.step(total_reg + total_adv)
             else:
                 scheduler.step()
-            
-            avg_reg = total_reg / base_batches
-            avg_adv = total_adv / base_batches
+            avg_reg = total_reg / n_batches if n_batches > 0 else 0.0
+            avg_adv = total_adv / n_batches if n_batches > 0 else 0.0
             msg = f"[DA Epoch {epoch}] reg={avg_reg:.4f}, adv={avg_adv:.4f}, lambda={lambda_val:.3f}"
             if self.logger:
                 self.logger.info(msg)
             elif self.verbose:
                 print(msg)
-            
+
             # Validation (if val_loaders provided)
+            val_metrics = {}
             if val_loaders and (epoch % self.eval_interval == 0 or epoch == adaptation_epochs - 1):
-                self._evaluate(val_loaders, training_loss, epoch)
-            
-            # Optional checkpointing using PhysicsNeMo checkpoint system
-            if save_every is not None and (epoch % save_every == 0):
-                # Only save on rank 0 in distributed training
-                should_save = True
-                if DistributedManager.is_initialized():
-                    dist_manager = DistributedManager()
-                    should_save = (dist_manager.rank == 0)
-                elif _has_comm:
-                    should_save = (comm.get_local_rank() == 0)
-                
-                if should_save:
-                    sd = Path(save_dir)
-                    sd.mkdir(parents=True, exist_ok=True)
-                    
-                    # Determine model parallel rank
-                    model_parallel_rank = 0
-                    if DistributedManager.is_initialized():
-                        dist_manager = DistributedManager()
-                        if "model_parallel" in dist_manager.group_names:
-                            model_parallel_rank = dist_manager.group_rank("model_parallel")
-                    
-                    # Save model(s) - handle PyTorch submodules if needed
-                    model_to_save = self.model
-                    if isinstance(self.model, torch.nn.parallel.DistributedDataParallel):
-                        model_to_save = self.model.module
-                    
-                    model_saved_separately = save_model_checkpoint(
-                        model=model_to_save,
-                        save_dir=sd,
-                        epoch=epoch,
-                        model_parallel_rank=model_parallel_rank,
+                val_metrics = self._evaluate(val_loaders, training_loss, epoch)
+
+            if self.best_metric_name and self.best_metric_name in val_metrics:
+                best_value = val_metrics[self.best_metric_name]
+                if best_value < self.best_metric_value:
+                    self.best_metric_value = best_value
+                    self._save_checkpoint(
+                        save_dir,
+                        optimizer,
+                        scheduler,
+                        epoch,
+                        save_classifier=True,
+                        is_best=True,
+                        metric_name=self.best_metric_name,
                     )
-                    
-                    # Prepare models list for PhysicsNeMo (includes domain classifier)
-                    models_to_save = []
-                    if not model_saved_separately:
-                        models_to_save.append(model_to_save)
-                    # Always add domain classifier as second model
-                    models_to_save.append(self.domain_classifier)
-                    
-                    # Save checkpoint with both models and training state
-                    save_checkpoint(
-                        path=str(sd),
-                        models=models_to_save if not model_saved_separately else [self.domain_classifier],
-                        optimizer=optimizer,
-                        scheduler=scheduler,
-                        scaler=None,
-                        epoch=epoch,
-                        metadata={"stage": "domain_adaptation", "epoch": epoch},
-                    )
-                    
-                    msg = f"Saved DA checkpoint at epoch {epoch}"
-                    if self.logger:
-                        self.logger.info(msg)
-                    elif self.verbose:
-                        print(msg)
-        
-        # Save final checkpoint (outside epoch loop) using PhysicsNeMo checkpoint system
-        should_save = True
-        if DistributedManager.is_initialized():
-            dist_manager = DistributedManager()
-            should_save = (dist_manager.rank == 0)
-        elif _has_comm:
-            should_save = (comm.get_local_rank() == 0)
-        
-        if should_save:
-            sd = Path(save_dir)
-            sd.mkdir(parents=True, exist_ok=True)
-            
-            # Determine model parallel rank
-            model_parallel_rank = 0
-            if DistributedManager.is_initialized():
-                dist_manager = DistributedManager()
-                if "model_parallel" in dist_manager.group_names:
-                    model_parallel_rank = dist_manager.group_rank("model_parallel")
-            
-            # Save model(s) - handle PyTorch submodules if needed
-            model_to_save = self.model
-            if isinstance(self.model, torch.nn.parallel.DistributedDataParallel):
-                model_to_save = self.model.module
-            
-            final_epoch = adaptation_epochs - 1
-            model_saved_separately = save_model_checkpoint(
-                model=model_to_save,
-                save_dir=sd,
-                epoch=final_epoch,
-                model_parallel_rank=model_parallel_rank,
-            )
-            
-            # Prepare models list for PhysicsNeMo (includes domain classifier)
-            models_to_save = []
-            if not model_saved_separately:
-                models_to_save.append(model_to_save)
-            # Always add domain classifier as second model
-            models_to_save.append(self.domain_classifier)
-            
-            # Save checkpoint with both models and training state
-            save_checkpoint(
-                path=str(sd),
-                models=models_to_save if not model_saved_separately else [self.domain_classifier],
-                optimizer=optimizer,
-                scheduler=scheduler,
-                scaler=None,
-                epoch=final_epoch,
-                metadata={"stage": "domain_adaptation", "final_epoch": True, "epoch": final_epoch},
-            )
-            
-            msg = "Saved final DA checkpoint using PhysicsNeMo format"
-            if self.logger:
-                self.logger.info(msg)
-            elif self.verbose:
-                print(msg)
-        
+
+            should_save_latest = save_every is None or epoch % save_every == 0
+            if should_save_latest:
+                self._save_checkpoint(
+                    save_dir,
+                    optimizer,
+                    scheduler,
+                    epoch,
+                    save_classifier=True,
+                    is_best=False,
+                    metric_name=self.best_metric_name,
+                )
+
         msg = "Domain adaptation training completed!"
         if self.logger:
             self.logger.info(msg)
@@ -871,6 +580,9 @@ class DomainAdaptationTrainer:
     
     @eval_interval.setter
     def eval_interval(self, value):
+        value = int(value)
+        if value <= 0:
+            raise ValueError("eval_interval must be a positive integer.")
         self._eval_interval = value
     
     def _evaluate(
@@ -878,7 +590,7 @@ class DomainAdaptationTrainer:
         val_loaders: Dict[str, DataLoader], 
         loss_fn: Any, 
         epoch: int
-    ) -> None:
+    ) -> Dict[str, float]:
         r"""
         Evaluate model on validation loaders.
 
@@ -895,27 +607,35 @@ class DomainAdaptationTrainer:
         if self.data_processor is not None:
             self.data_processor.eval()
         
+        metrics: Dict[str, float] = {}
         with torch.no_grad():
             for name, loader in val_loaders.items():
                 total_loss = 0.0
                 n_samples = 0
-                
+
                 for sample in loader:
                     try:
                         if self.data_processor is not None:
                             sample = self.data_processor.preprocess(sample)
                         else:
-                            sample = {k: v.to(self.device) for k, v in sample.items() if torch.is_tensor(v)}
-                        
-                        out = self.model(**sample)
-                        
-                        if self.data_processor is not None:
-                            out, sample = self.data_processor.postprocess(out, sample)
-                        
-                        # Loss function expects (y_pred, **sample) where sample contains 'y'
-                        loss = loss_fn(out, **sample)
+                            sample = {
+                                k: v.to(self.device)
+                                for k, v in sample.items()
+                                if torch.is_tensor(v)
+                            }
+
+                        with self._autocast_context():
+                            out = self.model(**sample)
+
+                            if self.data_processor is not None:
+                                out, sample = self.data_processor.postprocess(out, sample)
+
+                            loss = loss_fn(out, **sample)
                         total_loss += loss.item()
-                        n_samples += sample.get("y", out).shape[0] if isinstance(sample.get("y"), torch.Tensor) else out.shape[0]
+                        if isinstance(sample.get("y"), torch.Tensor):
+                            n_samples += sample["y"].shape[0]
+                        else:
+                            n_samples += out.shape[0]
                     except Exception as e:
                         msg = f"Error evaluating on {name}: {e}"
                         if self.logger:
@@ -923,13 +643,17 @@ class DomainAdaptationTrainer:
                         elif self.verbose:
                             print(msg)
                         raise
-                
-                avg_loss = total_loss / len(loader) if len(loader) > 0 else 0.0
+
+                total_loss = self._all_reduce_scalar(total_loss)
+                n_samples = self._all_reduce_scalar(n_samples)
+                avg_loss = total_loss / n_samples if n_samples > 0 else 0.0
+                metrics[name] = avg_loss
                 msg = f"  Eval {name}: loss={avg_loss:.6f}"
                 if self.logger:
                     self.logger.info(msg)
                 elif self.verbose:
                     print(msg)
+        return metrics
     
     def _save_checkpoint(
         self, 
@@ -937,7 +661,9 @@ class DomainAdaptationTrainer:
         optimizer: torch.optim.Optimizer, 
         scheduler: Any, 
         epoch: int, 
-        save_classifier: bool = False
+        save_classifier: bool = False,
+        is_best: bool = False,
+        metric_name: Optional[str] = None,
     ) -> None:
         r"""
         Save training checkpoint using PhysicsNeMo checkpoint system.
@@ -958,6 +684,8 @@ class DomainAdaptationTrainer:
         save_classifier : bool, optional, default=False
             Whether to save classifier state dict.
         """
+        if save_dir is None:
+            return
         save_dir = Path(save_dir)
         
         # Only save on rank 0 in distributed training
@@ -974,29 +702,11 @@ class DomainAdaptationTrainer:
         try:
             save_dir.mkdir(parents=True, exist_ok=True)
             
-            # Determine model parallel rank
-            model_parallel_rank = 0
-            if DistributedManager.is_initialized():
-                dist_manager = DistributedManager()
-                if "model_parallel" in dist_manager.group_names:
-                    model_parallel_rank = dist_manager.group_rank("model_parallel")
-            
-            # Save model(s) - handle PyTorch submodules if needed
             model_to_save = self.model
             if isinstance(self.model, torch.nn.parallel.DistributedDataParallel):
                 model_to_save = self.model.module
-            
-            model_saved_separately = save_model_checkpoint(
-                model=model_to_save,
-                save_dir=save_dir,
-                epoch=epoch,
-                model_parallel_rank=model_parallel_rank,
-            )
-            
-            # Prepare models list for PhysicsNeMo
-            models_to_save = []
-            if not model_saved_separately:
-                models_to_save.append(model_to_save)
+
+            models_to_save = [model_to_save]
             if save_classifier:
                 models_to_save.append(self.domain_classifier)
             
@@ -1006,10 +716,25 @@ class DomainAdaptationTrainer:
                 models=models_to_save if models_to_save else None,
                 optimizer=optimizer,
                 scheduler=scheduler,
-                scaler=None,
+                scaler=self.scaler if self.scaler.is_enabled() else None,
                 epoch=epoch,
-                metadata={"stage": "domain_adaptation", "epoch": epoch},
+                metadata={
+                    "stage": self.checkpoint_stage,
+                    "epoch": epoch,
+                    "is_best": is_best,
+                    "best_metric_value": self.best_metric_value if is_best else None,
+                },
             )
+
+            if is_best and metric_name is not None:
+                write_best_checkpoint_metadata(
+                    save_dir,
+                    stage=self.checkpoint_stage,
+                    epoch=epoch,
+                    metric_name=metric_name,
+                    metric_value=self.best_metric_value,
+                    models=models_to_save,
+                )
             
             msg = f"Saved checkpoint to {save_dir}"
             if self.logger:
@@ -1047,7 +772,7 @@ class DomainAdaptationTrainer:
         Returns
         -------
         int
-            Epoch number to resume from (0 if no checkpoint found).
+            Epoch number to resume from (-1 if no checkpoint found).
         """
         resume_dir = Path(resume_dir)
         
@@ -1057,86 +782,85 @@ class DomainAdaptationTrainer:
                 self.logger.warning(msg)
             elif self.verbose:
                 print(msg)
-            return 0
+            return -1
 
         try:
-            # Try PhysicsNeMo format first (new format)
-            checkpoint_loaded = False
-            resume_epoch = 0
             metadata_dict = {}
-            
+
             try:
-                # Try to load using PhysicsNeMo format
-                # Prepare models list (main model + domain classifier if available)
                 models_to_load = [self.model]
                 if hasattr(self, 'domain_classifier') and self.domain_classifier is not None:
                     models_to_load.append(self.domain_classifier)
-                
-                resume_epoch = load_checkpoint(
+
+                resolved_epoch = resolve_checkpoint_epoch(resume_dir, "latest")
+                validate_checkpoint_files(resume_dir, models_to_load, resolved_epoch)
+                load_checkpoint(
                     path=str(resume_dir),
                     models=models_to_load,
                     optimizer=optimizer,
                     scheduler=scheduler,
-                    scaler=None,
-                    epoch=None,  # Load latest
+                    scaler=self.scaler if self.scaler.is_enabled() else None,
+                    epoch=resolved_epoch,
                     metadata_dict=metadata_dict,
                     device=self.device,
                 )
-                
                 if self.logger:
-                    self.logger.info("Loaded checkpoint using PhysicsNeMo format")
-                checkpoint_loaded = True
+                    self.logger.info(f"Loaded checkpoint using PhysicsNeMo format (epoch={resolved_epoch})")
+                resume_epoch = resolved_epoch
             except (FileNotFoundError, KeyError, ValueError) as e:
-                # Fall back to neuralop format (old format)
                 if self.logger:
                     self.logger.info(f"PhysicsNeMo checkpoint not found, trying neuralop format: {e}")
-                
-                # Check for neuralop checkpoint files
-                if (resume_dir / "best_model_state_dict.pt").exists():
-                    save_name = "best_model"
-                elif (resume_dir / "model_state_dict.pt").exists():
-                    save_name = "model"
-                else:
+
+                save_name = resolve_legacy_neuralop_checkpoint_name(resume_dir, "latest")
+                if save_name is None:
                     msg = f"No checkpoint found in {resume_dir} (tried both formats)"
                     if self.logger:
                         self.logger.warning(msg)
                     elif self.verbose:
                         print(msg)
-                    return 0
+                    return -1
 
-                # Load using neuralop format
                 from neuralop.training.training_state import load_training_state
-                
-                self.model, optimizer, scheduler, _, resume_epoch = load_training_state(
+
+                model_for_load = self.model.module if isinstance(self.model, torch.nn.parallel.DistributedDataParallel) else self.model
+                if hasattr(model_for_load, "gino"):
+                    model_for_load = model_for_load.gino
+                    if hasattr(model_for_load, "inner_model"):
+                        model_for_load = model_for_load.inner_model
+
+                _, optimizer, scheduler, _, resume_epoch = load_training_state(
                     save_dir=resume_dir,
                     save_name=save_name,
-                    model=self.model,
+                    model=model_for_load,
                     optimizer=optimizer,
                     scheduler=scheduler,
                 )
-                
+
                 # Try to load domain classifier if it exists
                 classifier_path = resume_dir / "classifier_state_dict.pt"
                 if classifier_path.exists() and hasattr(self, 'domain_classifier') and self.domain_classifier is not None:
-                    self.domain_classifier.load_state_dict(
+                    classifier_target = (
+                        self.domain_classifier.module
+                        if isinstance(self.domain_classifier, torch.nn.parallel.DistributedDataParallel)
+                        else self.domain_classifier
+                    )
+                    classifier_target.load_state_dict(
                         torch.load(str(classifier_path), map_location=self.device)
                     )
                     if self.logger:
                         self.logger.info("Loaded domain classifier from neuralop checkpoint")
-                
+
                 if self.logger:
                     self.logger.info(f"Loaded checkpoint using neuralop format: {save_name}")
-                checkpoint_loaded = True
 
-            if checkpoint_loaded and resume_epoch is not None:
+            if resume_epoch is not None and resume_epoch >= 0:
                 msg = f"Resumed from epoch {resume_epoch}"
                 if self.logger:
                     self.logger.info(msg)
                 elif self.verbose:
                     print(msg)
                 return resume_epoch
-            else:
-                return 0
+            return -1
                 
         except Exception as e:
             msg = f"Error loading checkpoint from {resume_dir}: {e}"
@@ -1215,6 +939,7 @@ def adapt_model(
         logger = type("Logger", (), {"info": lambda self, msg: log_info(msg)})()
 
     logger.info("Starting domain adaptation on source + target...")
+    data_io_cfg = getattr(config, "data_io", {})
     
     # Validate inputs
     if not hasattr(model, 'fno_hidden_channels'):
@@ -1237,16 +962,22 @@ def adapt_model(
         raise_on_smaller=True,
         skip_before_timestep=getattr(target_data_config, "skip_before_timestep", 0),
         noise_type=getattr(target_data_config, "noise_type", "none"),
-        noise_std=getattr(target_data_config, "noise_std", None)
+        noise_std=getattr(target_data_config, "noise_std", None),
+        backend=getattr(data_io_cfg, "backend", "auto"),
+        cache_dir_name=getattr(data_io_cfg, "cache_dir_name", ".flood_cache"),
+        rebuild_cache=bool(getattr(data_io_cfg, "rebuild_cache", False)),
+        run_cache_size=int(getattr(data_io_cfg, "run_cache_size", 4)),
         )
     except Exception as e:
         raise RuntimeError(f"Failed to load target dataset from {target_data_config.root}: {e}") from e
     
     # Split into train/val
     train_sz_target = int(0.9 * len(target_full_dataset))
-    target_train_raw, target_val_raw = random_split(
+    target_train_raw, target_val_raw = split_dataset(
         target_full_dataset,
-        [train_sz_target, len(target_full_dataset) - train_sz_target]
+        [train_sz_target, len(target_full_dataset) - train_sz_target],
+        seed=config.distributed.seed,
+        offset=23,
     )
     logger.info(f"Target domain: total={len(target_full_dataset)}, train={train_sz_target}, val={len(target_val_raw)}")
     
@@ -1254,39 +985,25 @@ def adapt_model(
     for nm in normalizers.values():
         nm.to('cpu')
     
-    # Collect and normalize target training data
-    logger.info("Collecting and normalizing target training data...")
-    geom_t_tr, static_t_tr, boundary_t_tr, dyn_t_tr, tgt_t_tr = collect_all_fields(target_train_raw, True)
-    _, big_target_train = stack_and_fit_transform(
-        geom_t_tr, static_t_tr, boundary_t_tr, dyn_t_tr, tgt_t_tr,
-        normalizers=normalizers, fit_normalizers=False
-    )
-    target_train_ds = NormalizedDataset(
-        geometry=big_target_train["geometry"],
-        static=big_target_train["static"],
-        boundary=big_target_train["boundary"],
-        dynamic=big_target_train["dynamic"],
-        target=big_target_train["target"],
-        query_res=target_data_config.query_res
+    logger.info("Preparing lazily normalized target training data...")
+    target_train_ds = LazyNormalizedDataset(
+        base_dataset=target_train_raw,
+        normalizers=normalizers,
+        query_res=target_data_config.query_res,
+        apply_noise=True,
     )
     
-    # Collect and normalize target validation data
-    logger.info("Collecting and normalizing target validation data...")
-    geom_t_val, static_t_val, boundary_t_val, dyn_t_val, tgt_t_val = collect_all_fields(target_val_raw, True)
-    _, big_target_val = stack_and_fit_transform(
-        geom_t_val, static_t_val, boundary_t_val, dyn_t_val, tgt_t_val,
-        normalizers=normalizers, fit_normalizers=False
+    logger.info("Preparing lazily normalized target validation data...")
+    target_val_ds = LazyNormalizedDataset(
+        base_dataset=target_val_raw,
+        normalizers=normalizers,
+        query_res=target_data_config.query_res,
+        apply_noise=False,
     )
-    target_val_ds = NormalizedDataset(
-        geometry=big_target_val["geometry"],
-        static=big_target_val["static"],
-        boundary=big_target_val["boundary"],
-        dynamic=big_target_val["dynamic"],
-        target=big_target_val["target"],
-        query_res=target_data_config.query_res
-    )
-    target_val_loader = DataLoader(
-        target_val_ds, batch_size=target_data_config.batch_size, shuffle=False
+    target_val_loader = create_loader_from_config(
+        target_val_ds,
+        target_data_config,
+        shuffle=False,
     )
     
     # Create domain classifier
@@ -1345,16 +1062,29 @@ def adapt_model(
         logger.info(f"Note: testing_loss specified but domain adaptation currently uses training_loss for evaluation")
 
     # Create custom domain adaptation trainer
+    spatial_shape = getattr(target_data_config, "query_res", None)
+    if spatial_shape is None:
+        resolution = getattr(target_data_config, "resolution", None)
+        spatial_shape = [resolution, resolution] if resolution is not None else None
+    mixed_precision_enabled = resolve_amp_autocast_enabled(
+        config.training.get("amp_autocast", False),
+        device=device,
+        spatial_shape=spatial_shape,
+        logger=logger if hasattr(logger, "warning") else None,
+        context="FloodForecaster domain adaptation",
+    )
+
     trainer_adapt = DomainAdaptationTrainer(
         model=model,
         data_processor=data_processor,
         domain_classifier=domain_classifier,
         device=device,
+        mixed_precision=mixed_precision_enabled,
+        eval_interval=resolve_eval_interval(config),
         verbose=is_logger,
         logger=logger,
         wandb_step_offset=wandb_step_offset,
     )
-    trainer_adapt.eval_interval = 1  # Evaluate every epoch
 
     # Train with domain adaptation
     save_dir = os.path.join(config.checkpoint.get("save_dir", "./checkpoints"), "adapt")
@@ -1362,7 +1092,11 @@ def adapt_model(
     logger.info(f"Starting domain adaptation training for {config.training.get('n_epochs_adapt', 50)} epochs")
     trainer_adapt.train_domain_adaptation(
         src_loader=source_train_loader,
-        tgt_loader=DataLoader(target_train_ds, batch_size=target_data_config.batch_size, shuffle=True),
+        tgt_loader=create_loader_from_config(
+            target_train_ds,
+            target_data_config,
+            shuffle=True,
+        ),
         optimizer=optimizer_adapt,
         scheduler=scheduler_adapt,
         training_loss=training_loss_fn,
@@ -1377,5 +1111,11 @@ def adapt_model(
         resume_classifier_from_dir=config.checkpoint.get("resume_from_adapt", None),
         val_loaders={"source_val": source_val_loader, "target_val": target_val_loader},
     )
+
+    dist_manager = DistributedManager()
+    if dist_manager.rank == 0:
+        normalizers_path = os.path.join(save_dir, "normalizers.pt")
+        torch.save(normalizers, normalizers_path)
+        logger.info(f"Saved normalizers to {normalizers_path}")
     
     return model, domain_classifier, trainer_adapt

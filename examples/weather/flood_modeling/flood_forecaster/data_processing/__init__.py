@@ -16,7 +16,8 @@
 
 r"""Data processing modules for flood prediction."""
 
-from .data_processor import FloodGINODataProcessor, GINOWrapper, LpLossWrapper
+from .data_processor import FloodGINODataProcessor, LpLossWrapper
+from models import GINOWrapper
 
 __all__ = ["FloodGINODataProcessor", "GINOWrapper", "LpLossWrapper"]
 

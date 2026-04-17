@@ -16,14 +16,26 @@
 
 r"""Dataset classes for flood prediction."""
 
+from .cache_backend import HDF5RunStore, RawTextRunStore, create_run_store, prepare_flood_cache
 from .flood_dataset import FloodDatasetWithQueryPoints
-from .normalized_dataset import NormalizedDataset, NormalizedRolloutTestDataset
+from .normalized_dataset import (
+    LazyNormalizedDataset,
+    LazyNormalizedRolloutDataset,
+    NormalizedDataset,
+    NormalizedRolloutTestDataset,
+)
 from .rollout_dataset import FloodRolloutTestDatasetNew
 
 __all__ = [
     "FloodDatasetWithQueryPoints",
+    "HDF5RunStore",
+    "LazyNormalizedDataset",
+    "LazyNormalizedRolloutDataset",
     "FloodRolloutTestDatasetNew",
     "NormalizedDataset",
     "NormalizedRolloutTestDataset",
+    "RawTextRunStore",
+    "create_run_store",
+    "prepare_flood_cache",
 ]
 

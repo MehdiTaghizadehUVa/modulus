@@ -182,6 +182,20 @@ def test_normalized_rollout_dataset_getitem(rollout_samples, device):
     assert sample["cell_area"].shape == (100,)
 
 
+def test_normalized_rollout_dataset_without_cell_area(rollout_samples):
+    """Rollout samples without cell area should still be consumable."""
+    stripped_samples = [
+        {key: value for key, value in sample.items() if key != "cell_area"}
+        for sample in rollout_samples
+    ]
+
+    ds = NormalizedRolloutTestDataset(stripped_samples, query_res=[8, 8])
+    sample = ds[0]
+
+    assert "cell_area" not in sample
+    assert sample["query_points"].shape == (8, 8, 2)
+
+
 # Tests for file-based dataset classes
 @pytest.fixture
 def temp_data_dir(tmp_path):
