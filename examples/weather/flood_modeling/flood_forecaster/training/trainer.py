@@ -298,6 +298,12 @@ class NeuralOperatorTrainer:
             return int(out.shape[0])
         return 1
 
+    @staticmethod
+    def _model_forward_kwargs(sample: Dict[str, Any]) -> Dict[str, Any]:
+        r"""Drop loss-only and metadata keys before forwarding the batch to the model."""
+        loss_only_keys = {"y", "target", "run_id", "time_index", "cell_area"}
+        return {key: value for key, value in sample.items() if key not in loss_only_keys}
+
     def _wrap_model_for_distributed(self, model: nn.Module) -> nn.Module:
         if not DistributedManager.is_initialized():
             return model
@@ -670,6 +676,7 @@ class NeuralOperatorTrainer:
                 k: v.to(self.device) if torch.is_tensor(v) else v
                 for k, v in sample.items()
             }
+        model_kwargs = self._model_forward_kwargs(sample)
 
         # Forward pass with optional mixed precision
         if self.mixed_precision:
@@ -677,13 +684,13 @@ class NeuralOperatorTrainer:
             if hasattr(torch.amp, 'autocast') and self.autocast_device_type == 'cuda':
                 # PyTorch 2.0+ with torch.amp.autocast
                 with torch.amp.autocast(device_type=self.autocast_device_type):
-                    out = self.model(**sample)
+                    out = self.model(**model_kwargs)
             else:
                 # Older PyTorch versions or CPU - use torch.cuda.amp.autocast (CPU will be no-op)
                 with autocast():
-                    out = self.model(**sample)
+                    out = self.model(**model_kwargs)
         else:
-            out = self.model(**sample)
+            out = self.model(**model_kwargs)
 
         # Log output shape on first batch of first epoch
         if self.epoch == 0 and idx == 0 and self.verbose and isinstance(out, torch.Tensor):
@@ -884,9 +891,10 @@ class NeuralOperatorTrainer:
                 k: v.to(self.device) if torch.is_tensor(v) else v
                 for k, v in sample.items()
             }
+        model_kwargs = self._model_forward_kwargs(sample)
 
         # Forward pass
-        out = self.model(**sample)
+        out = self.model(**model_kwargs)
 
         # Postprocess output
         if self.data_processor is not None:
@@ -948,9 +956,10 @@ class NeuralOperatorTrainer:
 
             if sample is None:
                 break
+            model_kwargs = self._model_forward_kwargs(sample)
 
             # Forward pass
-            out = self.model(**sample)
+            out = self.model(**model_kwargs)
 
             # Postprocess output with step index
             if self.data_processor is not None:

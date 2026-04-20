@@ -234,6 +234,12 @@ class DomainAdaptationTrainer:
             )
         return nullcontext()
 
+    @staticmethod
+    def _model_forward_kwargs(sample: Dict[str, Any]) -> Dict[str, Any]:
+        r"""Drop loss-only and metadata keys before forwarding samples to the model."""
+        loss_only_keys = {"y", "target", "run_id", "time_index", "cell_area"}
+        return {key: value for key, value in sample.items() if key not in loss_only_keys}
+
     def _wrap_for_ddp(self, module: nn.Module) -> nn.Module:
         if not DistributedManager.is_initialized():
             return module
@@ -449,21 +455,23 @@ class DomainAdaptationTrainer:
                 else:
                     s = {k: v.to(self.device) for k, v in src_batch.items() if torch.is_tensor(v)}
                     t = {k: v.to(self.device) for k, v in tgt_batch.items() if torch.is_tensor(v)}
+                s_model_kwargs = self._model_forward_kwargs(s)
+                t_model_kwargs = self._model_forward_kwargs(t)
                 
                 optimizer.zero_grad(set_to_none=True)
                 with self._autocast_context():
                     if class_loss_weight > 0.0:
                         try:
-                            out_s, f_s = self.model(**s, return_features=True)
-                            out_t, f_t = self.model(**t, return_features=True)
+                            out_s, f_s = self.model(**s_model_kwargs, return_features=True)
+                            out_t, f_t = self.model(**t_model_kwargs, return_features=True)
                         except TypeError as e:
                             raise RuntimeError(
                                 "Model must support return_features=True for domain adaptation. "
                                 "Ensure model is wrapped with GINOWrapper."
                             ) from e
                     else:
-                        out_s = self.model(**s)
-                        out_t = self.model(**t)
+                        out_s = self.model(**s_model_kwargs)
+                        out_t = self.model(**t_model_kwargs)
                         f_s = None
                         f_t = None
 
@@ -623,9 +631,10 @@ class DomainAdaptationTrainer:
                                 for k, v in sample.items()
                                 if torch.is_tensor(v)
                             }
+                        model_kwargs = self._model_forward_kwargs(sample)
 
                         with self._autocast_context():
-                            out = self.model(**sample)
+                            out = self.model(**model_kwargs)
 
                             if self.data_processor is not None:
                                 out, sample = self.data_processor.postprocess(out, sample)

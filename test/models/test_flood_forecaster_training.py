@@ -143,9 +143,9 @@ training_init = importlib.util.module_from_spec(spec)
 sys.modules["training"].__dict__.update(training_init.__dict__)
 spec.loader.exec_module(training_init)
 
-from training.domain_adaptation import (
+from training.domain_adaptation import DomainAdaptationTrainer
+from models.domain_classifier import (
     CNNDomainClassifier,
-    DomainAdaptationTrainer,
     GradientReversal,
     GradientReversalFunction,
 )
@@ -175,7 +175,7 @@ class _ClassifierShouldNotRun(nn.Module):
 
     def __init__(self):
         super().__init__()
-        self.grl = GradientReversal(lambda_max=1.0)
+        self.grl = GradientReversal(lambda_=1.0)
         self.dummy = nn.Linear(1, 1)
 
     def forward(self, x):
@@ -516,6 +516,78 @@ def test_domain_adaptation_eval_normalizes_by_postprocessed_sample_count(device)
 
     metrics = trainer._evaluate({"target_val": loader}, batch_summed_loss, epoch=0)
     assert metrics["target_val"] == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("device", _DEVICES)
+def test_domain_adaptation_filters_loss_only_targets_before_model_forward(device, tmp_path):
+    """DA training should keep processor targets for the loss without forwarding them to the model."""
+
+    class StrictDAProcessor:
+        def preprocess(self, sample):
+            return {
+                "x": sample["x"].to(device),
+                "y": sample["target"].to(device),
+            }
+
+        def postprocess(self, out, sample):
+            return out, sample
+
+        def eval(self):
+            return self
+
+        def train(self):
+            return self
+
+        def to(self, device):
+            return self
+
+    class StrictDARegressionModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = nn.Linear(10, 3)
+            self.seen_kwargs = []
+
+        def forward(self, x=None, return_features: bool = False, **kwargs):
+            self.seen_kwargs.append(dict(kwargs))
+            assert "y" not in kwargs
+            out = self.linear(x)
+            if return_features:
+                features = torch.ones(x.shape[0], 4, 2, 2, device=x.device)
+                return out, features
+            return out
+
+    model = StrictDARegressionModel().to(device)
+    classifier = _ClassifierShouldNotRun().to(device)
+    trainer = DomainAdaptationTrainer(
+        model=model,
+        data_processor=StrictDAProcessor(),
+        domain_classifier=classifier,
+        device=device,
+        verbose=False,
+    )
+
+    samples = [{"x": torch.rand(10), "target": torch.rand(3)} for _ in range(4)]
+    loader = DataLoader(_DictDataset(samples), batch_size=2, shuffle=False)
+    optimizer = torch.optim.Adam(
+        list(model.parameters()) + list(classifier.parameters()),
+        lr=1e-3,
+    )
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.9)
+
+    trainer.train_domain_adaptation(
+        src_loader=loader,
+        tgt_loader=loader,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        training_loss=lambda pred, y=None, **_: torch.nn.functional.mse_loss(pred, y),
+        class_loss_weight=0.0,
+        adaptation_epochs=1,
+        save_dir=tmp_path / "adapt_filters_targets",
+        val_loaders={"target_val": loader},
+    )
+
+    assert model.seen_kwargs
+    assert all("y" not in kwargs for kwargs in model.seen_kwargs)
 
 
 @pytest.mark.parametrize("device", _DEVICES)

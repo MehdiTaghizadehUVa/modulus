@@ -123,7 +123,7 @@ trainer_module = importlib.util.module_from_spec(spec)
 sys.modules["training.trainer"] = trainer_module
 spec.loader.exec_module(trainer_module)
 
-from training.trainer import NeuralOperatorTrainer, _has_pytorch_submodules, save_model_checkpoint
+from training.trainer import NeuralOperatorTrainer
 from data_processing import GINOWrapper
 
 @pytest.fixture
@@ -545,6 +545,65 @@ def test_trainer_eval_normalizes_by_postprocessed_sample_count(simple_model, dev
     )
 
     assert metrics["val_unit"] == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("device", _DEVICES)
+def test_trainer_filters_loss_only_targets_before_model_forward(device):
+    """Processed target tensors should stay available for the loss but never reach model.forward."""
+
+    class StrictModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = nn.Linear(10, 3)
+            self.seen_kwargs = None
+
+        def forward(self, x=None, **kwargs):
+            self.seen_kwargs = dict(kwargs)
+            assert "y" not in kwargs
+            return self.linear(x)
+
+    class Processor:
+        def preprocess(self, sample):
+            return {
+                "x": sample["x"].to(device),
+                "y": sample["target"].to(device),
+            }
+
+        def postprocess(self, out, sample):
+            return out, sample
+
+        def eval(self):
+            return self
+
+        def train(self):
+            return self
+
+        def to(self, device):
+            return self
+
+    model = StrictModel().to(device)
+    trainer = NeuralOperatorTrainer(
+        model=model,
+        n_epochs=1,
+        device=device,
+        data_processor=Processor(),
+        verbose=False,
+    )
+    trainer.optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    trainer.regularizer = None
+
+    loss, processed = trainer._train_one_batch(
+        0,
+        {
+            "x": torch.rand(2, 10),
+            "target": torch.rand(2, 3),
+        },
+        lambda pred, y=None, **_: torch.nn.functional.mse_loss(pred, y),
+    )
+
+    assert torch.is_tensor(loss)
+    assert "y" in processed
+    assert model.seen_kwargs == {}
 
 
 def test_trainer_wrap_model_for_distributed_cpu_omits_gpu_ddp_args(monkeypatch):

@@ -445,34 +445,51 @@ class GINOWrapper(physicsnemo.Module, register=True):
         if len(latent_queries.shape) == 4:
             latent_queries = latent_queries[0]
 
+        batch_size = x.shape[0] if x is not None else latent_features.shape[0]
+        latent_points = latent_queries.reshape(-1, latent_queries.shape[-1])
+
         if latent_features is None:
-            in_p = gino_model.gno_in(y=input_geom, x=input_geom, f_y=x)
-            in_p = in_p.reshape(
-                [x.shape[0], *latent_queries.shape[:-1], gino_model.fno_hidden_channels]
+            in_p = gino_model.gno_in(
+                y=input_geom,
+                x=latent_points,
+                f_y=x,
             )
+            in_p = in_p.reshape((batch_size, *latent_queries.shape[:-1], -1))
             latent_embed = gino_model.latent_embedding(in_p=in_p, ada_in=ada_in)
         else:
             latent_embed = latent_features
 
         latent_embed = latent_embed.permute(
             0, *gino_model.in_coord_dim_reverse_order, 1
-        )
+        ).reshape(batch_size, -1, gino_model.fno_hidden_channels)
+        if getattr(gino_model, "out_gno_tanh", None) in ["latent_embed", "both"]:
+            latent_embed = torch.tanh(latent_embed)
+
+        gno_out_forward = getattr(gino_model.gno_out, "forward", gino_model.gno_out)
+        gno_out_parameters = inspect.signature(gno_out_forward).parameters
+        uses_legacy_gno_out = "f_x" in gno_out_parameters
 
         def _decode_queries(query_points: torch.Tensor) -> ModelOutputTensor:
             if len(query_points.shape) == 3:
                 query_points = query_points.squeeze(0)
-            out = gino_model.gno_out(
-                y=query_points,
-                x=latent_queries.reshape(-1, latent_queries.shape[-1]),
-                f_y=None,
-                f_x=latent_embed.reshape(
-                    x.shape[0], -1, gino_model.fno_hidden_channels
-                ),
-                reduction="sum",
-            )
+
+            if uses_legacy_gno_out:
+                out = gino_model.gno_out(
+                    y=query_points,
+                    x=latent_points,
+                    f_y=None,
+                    f_x=latent_embed,
+                    reduction="sum",
+                )
+            else:
+                out = gino_model.gno_out(
+                    y=latent_points,
+                    x=query_points,
+                    f_y=latent_embed,
+                )
             out = out.permute(0, 2, 1)
             out = gino_model.projection(out).permute(0, 2, 1)
-            if self.autoregressive and self.residual_output:
+            if self.autoregressive and self.residual_output and x is not None:
                 out = out + x[:, :, -3:]
             return out
 

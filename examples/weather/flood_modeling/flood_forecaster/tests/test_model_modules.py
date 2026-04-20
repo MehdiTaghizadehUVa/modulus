@@ -25,6 +25,66 @@ from tests.model_fixtures import FakeGINOBackbone  # noqa: E402
 FIXTURE_DIR = Path(__file__).resolve().parent / "data"
 
 
+class ShapeAwareGNOIn(torch.nn.Module):
+    def __init__(self, hidden_channels: int):
+        super().__init__()
+        self.hidden_channels = hidden_channels
+
+    def forward(self, y: torch.Tensor, x: torch.Tensor, f_y: torch.Tensor) -> torch.Tensor:
+        del y
+        batch_size = f_y.shape[0]
+        num_latent_points = x.shape[0]
+        base = torch.arange(
+            num_latent_points,
+            dtype=f_y.dtype,
+            device=f_y.device,
+        ).view(1, num_latent_points, 1)
+        channel_offsets = torch.arange(
+            self.hidden_channels,
+            dtype=f_y.dtype,
+            device=f_y.device,
+        ).view(1, 1, self.hidden_channels)
+        return base.expand(batch_size, -1, self.hidden_channels) + channel_offsets
+
+
+class ShapeAwareLatentEmbedding(torch.nn.Module):
+    def forward(self, in_p: torch.Tensor, ada_in=None) -> torch.Tensor:
+        del ada_in
+        return in_p.permute(0, 3, 1, 2).contiguous()
+
+
+class ShapeAwareGNOOut(torch.nn.Module):
+    def forward(self, y: torch.Tensor, x: torch.Tensor, f_y: torch.Tensor = None) -> torch.Tensor:
+        del y
+        query_count = x.shape[0]
+        base = f_y.mean(dim=1, keepdim=True).expand(-1, query_count, -1)
+        query_term = x.sum(dim=-1, keepdim=True).unsqueeze(0)
+        return base + query_term
+
+
+class ShapeAwareProjection(torch.nn.Module):
+    def __init__(self, hidden_channels: int, out_channels: int):
+        super().__init__()
+        self.linear = torch.nn.Linear(hidden_channels, out_channels)
+        torch.nn.init.constant_(self.linear.weight, 0.25)
+        torch.nn.init.constant_(self.linear.bias, 0.1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.linear(x.permute(0, 2, 1)).permute(0, 2, 1)
+
+
+class ShapeAwareBackbone(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.fno_hidden_channels = 4
+        self.out_channels = 3
+        self.in_coord_dim_reverse_order = (2, 3)
+        self.gno_in = ShapeAwareGNOIn(self.fno_hidden_channels)
+        self.latent_embedding = ShapeAwareLatentEmbedding()
+        self.gno_out = ShapeAwareGNOOut()
+        self.projection = ShapeAwareProjection(self.fno_hidden_channels, self.out_channels)
+
+
 def _load_fixture(file_name: str):
     return torch.load(FIXTURE_DIR / file_name, map_location="cpu", weights_only=False)
 
@@ -187,6 +247,38 @@ def test_gino_wrapper_autoregressive_residual_output():
 
     expected = base_output + fixture["x"][:, :, -3:]
     torch.testing.assert_close(autoregressive_output, expected, rtol=1e-6, atol=1e-6)
+
+
+def test_gino_wrapper_maps_mesh_inputs_to_latent_grid_points():
+    wrapper = GINOWrapper(ShapeAwareBackbone())
+    input_geom = torch.tensor(
+        [
+            [0.0, 0.0],
+            [0.5, 0.0],
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [1.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    latent_queries = torch.tensor(
+        [
+            [[0.0, 0.0], [0.5, 0.0], [1.0, 0.0]],
+            [[0.0, 1.0], [0.5, 1.0], [1.0, 1.0]],
+        ],
+        dtype=torch.float32,
+    )
+    output_queries = input_geom.clone()
+    x = torch.randn(2, input_geom.shape[0], 6)
+
+    output = wrapper(
+        input_geom=input_geom,
+        latent_queries=latent_queries,
+        output_queries=output_queries,
+        x=x,
+    )
+
+    assert output.shape == (2, output_queries.shape[0], 3)
 
 
 def test_cnn_domain_classifier_reference_output():
