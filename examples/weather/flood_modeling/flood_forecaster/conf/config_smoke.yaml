@@ -1,0 +1,21 @@
+defaults:
+  - config_short
+  - _self_
+
+hydra:
+  run:
+    dir: ${hydra:runtime.cwd}/outputs_smoke/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+source_data:
+  root: "${hydra:runtime.cwd}/smoke_data/source"
+  batch_size: 2
+
+target_data:
+  root: "${hydra:runtime.cwd}/smoke_data/target"
+  batch_size: 2
+
+checkpoint:
+  save_dir: "${hydra:runtime.cwd}/checkpoints_flood_forecaster_smoke"
+
+rollout:
+  out_dir: "${hydra:runtime.cwd}/rollout_outputs_smoke"

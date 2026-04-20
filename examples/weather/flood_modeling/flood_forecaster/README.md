@@ -139,6 +139,13 @@ Checkpoints are saved in subdirectories under `checkpoint.save_dir`:
 - `{save_dir}/pretrain/` - Contains pretraining checkpoints
 - `{save_dir}/adapt/` - Contains domain adaptation checkpoints
 
+FloodForecaster now follows the native PhysicsNeMo checkpoint contract in those stage directories:
+- Model weights are written as `GINOWrapper.*.mdlus` and, during adaptation, `CNNDomainClassifier.*.mdlus`
+- Optimizer / scheduler / scaler state is written as `checkpoint.*.pt`
+- The supported restore workflow is to instantiate the model from config, wrap it with `GINOWrapper`, and call `physicsnemo.utils.checkpoint.load_checkpoint(...)` on the checkpoint directory
+
+In other words, resume and inference settings should point at the checkpoint directory, not an individual `.mdlus` file.
+
 ### Inference
 
 To perform autoregressive rollout and generate evaluation visualizations:
@@ -188,17 +195,33 @@ These animations show the temporal evolution of water depth and velocity compone
 
 The dataset is handled via custom dataset classes defined in the `datasets/` module:
 
-- **`FloodDatasetWithQueryPoints`**: Loads raw flood simulation data and generates query points for GINO's latent and output representations
+- **`FloodDatasetWithQueryPoints`**: Builds sample windows for one-step training and validation while loading per-run tensors on demand
+- **`FloodRolloutTestDatasetNew`**: Loads full rollout sequences one run at a time for autoregressive evaluation
+- **`LazyNormalizedDataset` / `LazyNormalizedRolloutDataset`**: Apply fitted normalizers lazily at sample access time
 - **`NormalizedDataset`**: Wraps the raw dataset with normalization using `UnitGaussianNormalizer` for static, dynamic, boundary, and target fields
 - **`NormalizedRolloutTestDataset`**: Specialized dataset for rollout evaluation that preserves run IDs and cell area information
 
 The datasets automatically:
-- Load and concatenate static, dynamic, and boundary features
+- Cache raw text data into a shared HDF5 store under `<data_root>/.flood_cache/` on first use
+- Reuse a validated cache on subsequent runs, rebuilding only when tracked files change or `data_io.rebuild_cache=true`
+- Keep geometry and static features resident while loading dynamic and boundary tensors one run at a time through an in-process LRU cache
 - Generate query point grids for GINO's coordinate-based processing
 - Normalize features using statistics computed from training data
 - Handle variable-length time series and multiple simulation runs
 
-To use the datasets, they are instantiated through the training and inference pipelines, which handle data splitting, normalization fitting, and DataLoader creation automatically.
+The cache backend is controlled through the top-level `data_io` config block:
+
+```yaml
+data_io:
+  backend: auto
+  cache_dir_name: .flood_cache
+  rebuild_cache: false
+  run_cache_size: 4
+```
+
+`backend=auto` uses the HDF5 cache path by default and falls back to raw text loading only when requested. The first cache build is similar in cost to the old eager parse, but subsequent dataset initialization is much faster because training and inference reuse the cached per-run tensors.
+
+To use the datasets, instantiate them through the training and inference pipelines, which now handle cache preparation, data splitting, grouped normalization fitting, and DataLoader creation automatically.
 
 ## Evaluation Metrics
 

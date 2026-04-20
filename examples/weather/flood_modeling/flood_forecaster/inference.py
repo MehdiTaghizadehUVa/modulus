@@ -33,12 +33,18 @@ from neuralop import get_model
 
 from physicsnemo.distributed.manager import DistributedManager
 from physicsnemo.launch.logging import PythonLogger, RankZeroLoggingWrapper
-from physicsnemo.launch.utils.checkpoint import load_checkpoint
+from physicsnemo.utils.checkpoint import load_checkpoint
 
-from datasets import FloodRolloutTestDatasetNew, NormalizedRolloutTestDataset
+from datasets import FloodDatasetWithQueryPoints, FloodRolloutTestDatasetNew, LazyNormalizedRolloutDataset
 from data_processing import FloodGINODataProcessor, GINOWrapper
 from inference.rollout import rollout_prediction
-from utils.normalization import collect_all_fields, transform_with_existing_normalizers
+from utils.normalization import fit_normalizers_from_sample_index
+from utils.checkpointing import (
+    resolve_checkpoint_epoch,
+    resolve_legacy_neuralop_checkpoint_name,
+    validate_checkpoint_files,
+)
+from utils.runtime import seed_everything, split_dataset
 
 
 def log_section(logger: RankZeroLoggingWrapper, title: str, char: str = "=", width: int = 60):
@@ -82,8 +88,9 @@ def run_inference(cfg: DictConfig) -> None:
     log_section(log_rank_zero, "FLOOD FORECASTER - Inference and Evaluation")
 
     try:
-        # Get device from distributed manager or config
-        device = dist.device if dist.device is not None else cfg.distributed.device
+        device = dist.device
+        seed_everything(cfg.distributed.seed, dist.rank)
+        data_io_cfg = getattr(cfg, "data_io", {})
 
         # Log device information
         log_rank_zero.info("=" * 50)
@@ -94,6 +101,11 @@ def run_inference(cfg: DictConfig) -> None:
             log_rank_zero.info(f"GPU device: {torch.cuda.get_device_name(0)}")
         log_rank_zero.info(f"Using device: {device}")
         log_rank_zero.info(f"Distributed: rank={dist.rank}, world_size={dist.world_size}")
+        if hasattr(cfg, "data_io"):
+            log_rank_zero.info(
+                f"Data I/O backend: {cfg.data_io.backend} "
+                f"(cache_dir={cfg.data_io.cache_dir_name}, run_cache_size={cfg.data_io.run_cache_size})"
+            )
         log_rank_zero.info("=" * 50)
 
         # Check checkpoint path
@@ -107,6 +119,7 @@ def run_inference(cfg: DictConfig) -> None:
             log_rank_zero.error(f"Checkpoint path does not exist: {checkpoint_path}")
             sys.exit(1)
 
+        inference_epoch_mode = cfg.checkpoint.get("inference_epoch", "best")
         log_rank_zero.info(f"Loading model from checkpoint: {checkpoint_path}")
 
         # Create model (same as training)
@@ -125,18 +138,21 @@ def run_inference(cfg: DictConfig) -> None:
         gino_model = get_model(wrapper_config)
         gino_model = gino_model.to(device)
 
-        # Create GINOWrapper first (checkpoints are saved as GINOWrapper in PhysicsNeMo format)
-        # Enable autoregressive residual connection if specified in config
+        # Canonical PhysicsNeMo restore flow: instantiate from config, wrap, then
+        # load the checkpoint directory into that wrapper.
         model = GINOWrapper(gino_model, autoregressive=autoregressive)
         model = model.to(device)
 
         # Load checkpoint into the model
         # Support both PhysicsNeMo format (new) and neuralop format (old) for backward compatibility
         checkpoint_loaded = False
+        resolved_epoch = None
         
         # Try PhysicsNeMo format first (new format)
         # Checkpoints are saved as GINOWrapper (PhysicsNeMo Module), so we load into the wrapper
         try:
+            resolved_epoch = resolve_checkpoint_epoch(checkpoint_path, inference_epoch_mode)
+            validate_checkpoint_files(checkpoint_path, model, resolved_epoch)
             metadata_dict = {}
             load_checkpoint(
                 path=str(checkpoint_path),
@@ -144,11 +160,13 @@ def run_inference(cfg: DictConfig) -> None:
                 optimizer=None,
                 scheduler=None,
                 scaler=None,
-                epoch=None,  # Load latest checkpoint
+                epoch=resolved_epoch,
                 metadata_dict=metadata_dict,
                 device=device,
             )
-            log_rank_zero.info("Loaded checkpoint using PhysicsNeMo format")
+            log_rank_zero.info(
+                f"Loaded checkpoint using PhysicsNeMo format (epoch={resolved_epoch}, mode={inference_epoch_mode})"
+            )
             checkpoint_loaded = True
         except (FileNotFoundError, KeyError, ValueError) as e:
             # Fall back to neuralop format (old format)
@@ -160,19 +178,19 @@ def run_inference(cfg: DictConfig) -> None:
             try:
                 from neuralop.training.training_state import load_training_state
                 
-                # Check for neuralop checkpoint files
-                if (checkpoint_path / "best_model_state_dict.pt").exists():
-                    save_name = "best_model"
-                elif (checkpoint_path / "model_state_dict.pt").exists():
-                    save_name = "model"
-                else:
+                save_name = resolve_legacy_neuralop_checkpoint_name(
+                    checkpoint_path, inference_epoch_mode
+                )
+                if save_name is None:
                     log_rank_zero.error(f"No checkpoint found in {checkpoint_path}")
                     log_rank_zero.error("Tried both PhysicsNeMo and neuralop formats")
                     sys.exit(1)
 
                 # Load checkpoint using neuralop format into the inner model
                 # Extract the inner model from GINOWrapper for loading
-                inner_model = model.model if hasattr(model, 'model') else gino_model
+                inner_model = model.gino if hasattr(model, "gino") else gino_model
+                if hasattr(inner_model, "inner_model"):
+                    inner_model = inner_model.inner_model
                 inner_model, _, _, _, _ = load_training_state(
                     save_dir=checkpoint_path,
                     save_name=save_name,
@@ -209,8 +227,6 @@ def run_inference(cfg: DictConfig) -> None:
         else:
             # Fallback: recreate normalizers from source data if not saved
             log_rank_zero.info("Normalizers not found in checkpoint or pretrain folder. Recreating from source data...")
-            from datasets import FloodDatasetWithQueryPoints, NormalizedDataset
-            from utils.normalization import stack_and_fit_transform
 
             source_full_dataset = FloodDatasetWithQueryPoints(
                 data_root=cfg.source_data.root,
@@ -224,16 +240,22 @@ def run_inference(cfg: DictConfig) -> None:
                 skip_before_timestep=cfg.source_data.get("skip_before_timestep", 0),
                 noise_type="none",
                 noise_std=None,
+                backend=getattr(data_io_cfg, "backend", "auto"),
+                cache_dir_name=getattr(data_io_cfg, "cache_dir_name", ".flood_cache"),
+                rebuild_cache=bool(getattr(data_io_cfg, "rebuild_cache", False)),
+                run_cache_size=int(getattr(data_io_cfg, "run_cache_size", 4)),
             )
 
             # Use a subset to fit normalizers (faster)
-            from torch.utils.data import random_split
-
             train_sz = min(100, int(0.9 * len(source_full_dataset)))  # Use up to 100 samples
-            source_train_subset, _ = random_split(source_full_dataset, [train_sz, len(source_full_dataset) - train_sz])
+            source_train_subset, _ = split_dataset(
+                source_full_dataset,
+                [train_sz, len(source_full_dataset) - train_sz],
+                seed=cfg.distributed.seed,
+                offset=101,
+            )
 
-            geom, static, boundary, dyn, tgt = collect_all_fields(source_train_subset, True)
-            normalizers, _ = stack_and_fit_transform(geom, static, boundary, dyn, tgt)
+            normalizers = fit_normalizers_from_sample_index(source_train_subset)
             log_rank_zero.info("Normalizers recreated from source data")
 
         # Create data processor
@@ -257,44 +279,22 @@ def run_inference(cfg: DictConfig) -> None:
             boundary_patterns=cfg.rollout_data.get("boundary_patterns", {}),
             raise_on_smaller=True,
             skip_before_timestep=cfg.source_data.get("skip_before_timestep", 0),
+            backend=getattr(data_io_cfg, "backend", "auto"),
+            cache_dir_name=getattr(data_io_cfg, "cache_dir_name", ".flood_cache"),
+            rebuild_cache=bool(getattr(data_io_cfg, "rebuild_cache", False)),
+            run_cache_size=int(getattr(data_io_cfg, "run_cache_size", 4)),
         )
         log_rank_zero.info(f"Loaded {len(rollout_test_dataset)} rollout test samples")
-
-        # Collect and normalize rollout data
-        (
-            rollout_geom,
-            rollout_static,
-            rollout_boundary,
-            rollout_dyn,
-            _,
-            rollout_cell_area,
-        ) = collect_all_fields(rollout_test_dataset, expect_target=False)
-
-        # Move normalizers to CPU for data transformation
-        for norm in normalizers.values():
-            norm.to("cpu")
-
-        transformed_rollout = transform_with_existing_normalizers(
-            rollout_geom, rollout_static, rollout_boundary, rollout_dyn, normalizers
-        )
-
-        normalized_rollout_samples = [
-            {
-                "run_id": rollout_test_dataset.valid_run_ids[i],
-                "geometry": transformed_rollout["geometry"][i],
-                "static": transformed_rollout["static"][i],
-                "boundary": transformed_rollout["boundary"][i],
-                "dynamic": transformed_rollout["dynamic"][i],
-                "cell_area": rollout_cell_area[i],
-            }
-            for i in range(len(rollout_test_dataset))
-        ]
 
         # Run rollout prediction
         log_section(log_rank_zero, "Running Rollout Prediction")
         rollout_prediction(
             model=model,
-            rollout_dataset=NormalizedRolloutTestDataset(normalized_rollout_samples, cfg.source_data.query_res),
+            rollout_dataset=LazyNormalizedRolloutDataset(
+                rollout_test_dataset,
+                normalizers=normalizers,
+                query_res=cfg.source_data.query_res,
+            ),
             rollout_length=cfg.source_data.rollout_length,
             history_steps=cfg.source_data.n_history,
             dynamic_norm=normalizers["dynamic"],

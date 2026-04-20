@@ -1,0 +1,23 @@
+defaults:
+  - config_full_single_gpu
+  - _self_
+
+# Smaller GINO/FNO variant for single-GPU full-dataset training.
+# This keeps the safer single-GPU runtime settings from config_full_single_gpu
+# and reduces the main model width/depth to improve throughput.
+source_data:
+  batch_size: 2
+
+target_data:
+  batch_size: 2
+
+model:
+  fno_hidden_channels: 32
+  fno_n_layers: 2
+  gno_embed_channels: 16
+  in_gno_channel_mlp_hidden_layers: [48, 48]
+  out_gno_channel_mlp_hidden_layers: [256, 128]
+  fno_n_modes: [12, 12]
+  fno_rank: 0.25
+  projection_channel_ratio: 2
+  fno_channel_mlp_expansion: 0.25

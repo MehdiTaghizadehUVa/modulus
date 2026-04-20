@@ -32,12 +32,22 @@ distributed:
   seed: 123  # Random seed for reproducibility (integer)
   device: 'cuda:0'  # Fallback device for non-distributed execution. Ignored when using torchrun/mpirun.
 
+# Data loading and cache backend
+data_io:
+  backend: "auto"  # Options: "auto", "hdf5", "raw_txt"
+  cache_dir_name: ".flood_cache"  # Per-root cache directory for shared dataset artifacts
+  rebuild_cache: false  # Force rebuilding the HDF5 cache even if manifest validation succeeds
+  run_cache_size: 4  # Number of per-run tensors to keep in the in-process LRU cache
+
 # Dataset related for training and one-step evaluation
 source_data:
   root: "C:/Users/jrj6wm/Box/Flood_Modeling/Simulations/New_Results"  # Source domain training data path
   resolution: 48  # Spatial resolution of the dataset (integer)
   n_history: 3  # Number of historical time steps to use as input (integer)
   batch_size: 64  # Batch size for training (integer)
+  num_workers: 0  # DataLoader worker count (integer)
+  pin_memory: false  # Enable pinned host memory for DataLoader transfers (boolean)
+  persistent_workers: false  # Keep DataLoader workers alive between epochs (boolean)
   query_res: [48, 48]  # Query resolution for GINO model [height, width] (list of 2 integers)
   xy_file: "M40_XY.txt"  # Filename for XY coordinates (geometry file)
   static_files:
@@ -69,6 +79,9 @@ target_data:
   resolution: 48  # Spatial resolution of the dataset (integer)
   n_history: 3  # Number of historical time steps to use as input (integer)
   batch_size: 64  # Batch size for domain adaptation training (integer)
+  num_workers: 0  # DataLoader worker count (integer)
+  pin_memory: false  # Enable pinned host memory for DataLoader transfers (boolean)
+  persistent_workers: false  # Keep DataLoader workers alive between epochs (boolean)
   query_res: [48, 48]  # Query resolution for GINO model [height, width] (list of 2 integers)
   xy_file: "M40_XY.txt"  # Filename for XY coordinates (geometry file)
   static_files:
@@ -175,6 +188,7 @@ checkpoint:
   #                        For inference, this takes precedence over resume_from_source.
   resume_from_source: null  # Path to pretraining checkpoint directory, or null to start from scratch
   resume_from_adapt: null   # Path to domain adaptation checkpoint directory, or null
+  inference_epoch: "best"  # Checkpoint selection for inference: "best", "latest", or an integer epoch
   # Pretraining checkpoint saving options
   save_best: "source_val_l2"  # Metric to monitor for best model saving (e.g., "source_val_l2")
                               # Set to null to disable best model saving
@@ -190,6 +204,7 @@ training:
   n_epochs: 50  # Total epochs (fallback if n_epochs_source not specified)
   n_epochs_source: 30  # Number of epochs for source domain pretraining (integer)
   n_epochs_adapt: 20  # Number of epochs for domain adaptation (integer)
+  eval_interval: 1  # Run validation every N epochs during pretraining/adaptation (integer)
   learning_rate: 1e-4  # Learning rate for pretraining (float, typically 1e-5 to 1e-3)
   adapt_learning_rate: 1e-4  # Learning rate for domain adaptation (float, typically 1e-5 to 1e-3)
   training_loss: 'l2'  # Training loss function. Available options: 'l1' (L1/LpLoss with p=1), 'l2' (L2/LpLoss with p=2)
@@ -219,5 +234,5 @@ wandb:
   entity: 'uva_mehdi'  # W&B entity/username (string)
   sweep: false  # Enable W&B hyperparameter sweep mode (boolean: true/false)
   log_output: true  # Log model outputs to W&B (boolean: true/false)
-  eval_interval: 1  # Evaluation logging interval in epochs (integer)
+  eval_interval: ${training.eval_interval}  # Compatibility alias for validation cadence
 

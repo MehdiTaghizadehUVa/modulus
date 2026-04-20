@@ -1,0 +1,44 @@
+defaults:
+  - config
+  - _self_
+
+hydra:
+  run:
+    dir: ${hydra:runtime.cwd}/outputs_short/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+source_data:
+  root: "C:/Users/jrj6wm/Box/Flood_Modeling/Simulations/New_Results"
+  batch_size: 2
+  num_workers: 0
+  pin_memory: false
+  persistent_workers: false
+
+target_data:
+  root: "C:/Users/jrj6wm/Box/Flood_Modeling/Simulations/Case_4/Results_Target/Train"
+  batch_size: 2
+  num_workers: 0
+  pin_memory: false
+  persistent_workers: false
+
+rollout_data:
+  root: "C:/Users/jrj6wm/Box/Flood_Modeling/Simulations/Case_4/Results_Target/Test_20_Paper"
+
+checkpoint:
+  save_dir: "${hydra:runtime.cwd}/checkpoints_flood_forecaster_short"
+  resume_from_source: null
+  resume_from_adapt: null
+  inference_epoch: "best"
+
+rollout:
+  out_dir: "${hydra:runtime.cwd}/rollout_outputs_short"
+
+training:
+  n_epochs_source: 1
+  n_epochs_adapt: 1
+  amp_autocast: false
+  da_class_loss_weight: 0.0
+
+wandb:
+  log: false
+  sweep: false
+  log_output: false

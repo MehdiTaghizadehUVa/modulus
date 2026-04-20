@@ -27,6 +27,71 @@ import torch
 import torch.nn as nn
 
 import physicsnemo
+import types
+import importlib
+
+
+def _ensure_physicsnemo_test_compat():
+    try:
+        models_pkg = importlib.import_module("physicsnemo.models")
+    except ModuleNotFoundError:
+        models_pkg = sys.modules.get("physicsnemo.models") or types.ModuleType("physicsnemo.models")
+        sys.modules["physicsnemo.models"] = models_pkg
+    physicsnemo.models = models_pkg
+    if not hasattr(models_pkg, "__path__"):
+        models_pkg.__path__ = []
+    if not hasattr(models_pkg, "Module"):
+        models_pkg.Module = getattr(physicsnemo, "Module", nn.Module)
+
+    try:
+        meta_module = importlib.import_module("physicsnemo.models.meta")
+    except ModuleNotFoundError:
+        meta_module = types.ModuleType("physicsnemo.models.meta")
+        model_meta_cls = getattr(getattr(models_pkg, "meta", None), "ModelMetaData", None)
+        if model_meta_cls is None:
+            class ModelMetaData:
+                def __init__(self, name: str = ""):
+                    self.name = name
+
+            model_meta_cls = ModelMetaData
+        meta_module.ModelMetaData = model_meta_cls
+        sys.modules["physicsnemo.models.meta"] = meta_module
+    models_pkg.meta = meta_module
+
+    try:
+        utils_pkg = importlib.import_module("physicsnemo.utils")
+    except ModuleNotFoundError:
+        utils_pkg = sys.modules.get("physicsnemo.utils") or types.ModuleType("physicsnemo.utils")
+        sys.modules["physicsnemo.utils"] = utils_pkg
+    physicsnemo.utils = utils_pkg
+    if not hasattr(utils_pkg, "__path__"):
+        utils_pkg.__path__ = []
+
+    try:
+        capture_module = importlib.import_module("physicsnemo.utils.capture")
+    except ModuleNotFoundError:
+        capture_module = types.ModuleType("physicsnemo.utils.capture")
+
+        class _StaticCapture:
+            pass
+
+        capture_module._StaticCapture = _StaticCapture
+        sys.modules["physicsnemo.utils.capture"] = capture_module
+    utils_pkg.capture = capture_module
+
+    try:
+        filesystem_module = importlib.import_module("physicsnemo.utils.filesystem")
+    except ModuleNotFoundError:
+        filesystem_module = types.ModuleType("physicsnemo.utils.filesystem")
+        filesystem_module.LOCAL_CACHE = Path.cwd()
+        filesystem_module._download_cached = lambda path, recursive=False: path
+        sys.modules["physicsnemo.utils.filesystem"] = filesystem_module
+    utils_pkg.filesystem = filesystem_module
+
+
+_ensure_physicsnemo_test_compat()
+
+from physicsnemo.launch.utils.checkpoint import load_checkpoint, save_checkpoint
 
 # Conditionally include CUDA in device parametrization only if available
 _DEVICES = ["cpu"]
@@ -39,9 +104,6 @@ if str(_examples_dir) not in sys.path:
     sys.path.insert(0, str(_examples_dir))
 
 from data_processing import FloodGINODataProcessor, GINOWrapper, LpLossWrapper
-
-from . import common
-
 
 # Define MockGINOModelForCheckpoint at module level so it can be properly loaded from checkpoint
 # Note: Name doesn't start with "Test" to avoid pytest collection
@@ -225,8 +287,8 @@ def test_ginowrapper_forward(mock_gino_model, device):
     mock_gino_model.gno_in.return_value = torch.rand(8 * 8, 64)  # (n_points, channels)
     mock_gino_model.gno_out.return_value = torch.rand(1, 64, 100)  # (B, channels, n_out)
     def mock_projection(x):
-        # x is (B, n_out, channels), should return (B, n_out, out_channels)
-        return torch.zeros(x.shape[0], x.shape[1], 3)  # (B, n_out, out_channels)
+        # x is (B, n_out, channels); GINOWrapper expects projection to return (B, out_channels, n_out)
+        return torch.zeros(x.shape[0], 3, x.shape[1])  # (B, out_channels, n_out)
     mock_gino_model.projection.side_effect = mock_projection
 
     # Test forward with extra kwargs (should be filtered)
@@ -287,41 +349,34 @@ def _instantiate_model(cls, seed: int = 0, **kwargs):
 
 
 @pytest.mark.parametrize("device", _DEVICES)
-def test_ginowrapper_from_checkpoint(device, mock_gino_model):
-    """Test loading GINOWrapper from checkpoint and verify outputs."""
-    from pathlib import Path
-    import physicsnemo
-    
-    # Use the module-level MockGINOModelForCheckpoint class for checkpoint testing
-    # This ensures the class can be properly loaded from checkpoint
+def test_ginowrapper_supported_checkpoint_path(device):
+    """The supported load path is instantiate-from-config plus load_checkpoint."""
+    checkpoint_dir = Path("checkpoint_gino_wrapper")
     gino_model = MockGINOModelForCheckpoint()
-    
-    # Create a model and save checkpoint
     model_orig = GINOWrapper(gino_model, autoregressive=False).to(device)
-    checkpoint_path = Path("checkpoint_gino_wrapper.mdlus")
-    model_orig.save(str(checkpoint_path))
-    
-    # Load from checkpoint - use strict=False to handle potential state dict mismatches
-    # The nested TestGINOModel should be properly reconstructed via module path or registry
-    model = physicsnemo.Module.from_checkpoint(str(checkpoint_path), strict=False).to(device)
-    
-    # Verify attributes after loading
-    assert model.autoregressive is False
-    assert isinstance(model, GINOWrapper)
-    # Verify the wrapped model was loaded correctly with all layers
-    # Note: The model structure is preserved even if class type isn't exactly TestGINOModel
-    # (physicsnemo may load it as a generic Module if the class can't be imported)
-    assert hasattr(model.gino, 'gno_in')
-    assert hasattr(model.gino, 'gno_out')
-    assert hasattr(model.gino, 'projection')
-    assert hasattr(model.gino, 'latent_embedding')
-    # Verify the layers have the correct structure
-    assert isinstance(model.gino.gno_in, nn.Linear)
-    assert isinstance(model.gino.gno_out, nn.Linear)
-    assert isinstance(model.gino.projection, nn.Linear)
-    
-    # Cleanup
-    checkpoint_path.unlink(missing_ok=True)
+
+    save_checkpoint(path=str(checkpoint_dir), models=model_orig, epoch=0)
+
+    reloaded = GINOWrapper(MockGINOModelForCheckpoint(), autoregressive=False).to(device)
+    load_checkpoint(path=str(checkpoint_dir), models=reloaded, epoch=0, device=device)
+
+    assert torch.allclose(reloaded.gino.gno_in.weight, model_orig.gino.gno_in.weight)
+    assert torch.allclose(reloaded.gino.gno_out.weight, model_orig.gino.gno_out.weight)
+    assert torch.allclose(reloaded.gino.projection.weight, model_orig.gino.projection.weight)
+
+    for path in checkpoint_dir.glob("*"):
+        path.unlink()
+    checkpoint_dir.rmdir()
+
+
+def test_ginowrapper_does_not_advertise_legacy_from_checkpoint():
+    """GINOWrapper should inherit the PhysicsNeMo checkpoint signature, not the legacy neuralop one."""
+    import inspect
+
+    signature = inspect.signature(GINOWrapper.from_checkpoint)
+    assert "file_name" in signature.parameters
+    assert "save_folder" not in signature.parameters
+    assert "save_name" not in signature.parameters
 
 
 

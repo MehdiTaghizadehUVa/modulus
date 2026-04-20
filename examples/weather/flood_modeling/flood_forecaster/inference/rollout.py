@@ -149,14 +149,18 @@ def rollout_prediction(
         full_dynamic = sample["dynamic"].to(device)
         full_boundary = sample["boundary"].to(device)
         geometry = sample["geometry"]
+        static = sample["static"].to(device)
+        geometry_device = geometry.to(device)
+        query_points = sample["query_points"].to(device)
+        num_cells = static.shape[0]
         
         cell_area = sample.get("cell_area", None)
         if cell_area is not None:
             cell_area = cell_area.cpu().numpy()
 
         # Calculate hydrograph characteristics for the current event
-        unnormalized_boundary = boundary_norm.inverse_transform(full_boundary).squeeze(0)
-        inflow_hydrograph = unnormalized_boundary[:, 0, 0].cpu().numpy()
+        unnormalized_boundary = boundary_norm.inverse_transform(full_boundary)
+        inflow_hydrograph = unnormalized_boundary[:, 0].cpu().numpy()
         q_peak = np.max(inflow_hydrograph)
         total_volume = np.sum(inflow_hydrograph) * dt
         event_q_peaks.append(q_peak)
@@ -181,15 +185,16 @@ def rollout_prediction(
         for t in range(rollout_length):
             # Prepare input tensors
             dyn_flat = current_dynamic.permute(1, 0, 2).reshape(1, current_dynamic.shape[1], -1)
-            bc_flat = current_boundary.permute(1, 0, 2).reshape(1, current_boundary.shape[1], -1)
-            x = torch.cat([sample["static"].to(device).unsqueeze(0), bc_flat, dyn_flat], dim=2)
+            bc_flat = current_boundary.unsqueeze(0).unsqueeze(2).expand(-1, -1, num_cells, -1)
+            bc_flat = bc_flat.permute(0, 2, 1, 3).reshape(1, num_cells, -1)
+            x = torch.cat([static.unsqueeze(0), bc_flat, dyn_flat], dim=2)
 
             with torch.no_grad():
                 # Call model with GINO signature
                 pred = model(
-                    input_geom=geometry.to(device).unsqueeze(0),
-                    latent_queries=sample["query_points"].to(device).unsqueeze(0),
-                    output_queries=geometry.to(device).unsqueeze(0),
+                    input_geom=geometry_device.unsqueeze(0),
+                    latent_queries=query_points.unsqueeze(0),
+                    output_queries=geometry_device.unsqueeze(0),
                     x=x
                 )
 

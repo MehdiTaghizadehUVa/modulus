@@ -24,18 +24,24 @@ import os
 from typing import Optional
 
 import torch
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader
 
 from neuralop.training import AdamW
 from neuralop.losses import LpLoss
 from neuralop import get_model
 
-from physicsnemo.launch.utils.checkpoint import save_checkpoint
-from training.trainer import save_model_checkpoint
+from physicsnemo.distributed import DistributedManager
 
-from datasets import FloodDatasetWithQueryPoints, NormalizedDataset
-from data_processing import FloodGINODataProcessor, GINOWrapper, LpLossWrapper
-from utils.normalization import collect_all_fields, stack_and_fit_transform
+from datasets import FloodDatasetWithQueryPoints, LazyNormalizedDataset
+from data_processing import FloodGINODataProcessor, LpLossWrapper
+from models import GINOWrapper
+from utils.normalization import fit_normalizers_from_sample_index
+from utils.runtime import (
+    create_loader_from_config,
+    resolve_amp_autocast_enabled,
+    resolve_eval_interval,
+    split_dataset,
+)
 from training.trainer import NeuralOperatorTrainer
 
 
@@ -137,6 +143,7 @@ def pretrain_model(config, device, is_logger, source_data_config, logger=None):
         logger = type("Logger", (), {"info": lambda self, msg: log_info(msg), "debug": lambda self, msg: log_debug(msg)})()
 
     logger.info("Starting pretraining on source domain...")
+    data_io_cfg = getattr(config, "data_io", {})
     
     # Create source dataset
     logger.info(f"Loading source dataset from: {source_data_config.root}")
@@ -151,52 +158,48 @@ def pretrain_model(config, device, is_logger, source_data_config, logger=None):
         raise_on_smaller=True,
         skip_before_timestep=getattr(source_data_config, "skip_before_timestep", 0),
         noise_type=getattr(source_data_config, "noise_type", "none"),
-        noise_std=getattr(source_data_config, "noise_std", None)
+        noise_std=getattr(source_data_config, "noise_std", None),
+        backend=getattr(data_io_cfg, "backend", "auto"),
+        cache_dir_name=getattr(data_io_cfg, "cache_dir_name", ".flood_cache"),
+        rebuild_cache=bool(getattr(data_io_cfg, "rebuild_cache", False)),
+        run_cache_size=int(getattr(data_io_cfg, "run_cache_size", 4)),
     )
     
     # Split into train/val
     train_sz_source = int(0.9 * len(source_full_dataset))
-    source_train_raw, source_val_raw = random_split(
+    source_train_raw, source_val_raw = split_dataset(
         source_full_dataset,
-        [train_sz_source, len(source_full_dataset) - train_sz_source]
+        [train_sz_source, len(source_full_dataset) - train_sz_source],
+        seed=config.distributed.seed,
+        offset=11,
     )
     logger.info(f"Source domain: total={len(source_full_dataset)}, train={train_sz_source}, val={len(source_val_raw)}")
     
-    # Collect and normalize training data
-    logger.info("Collecting and normalizing training data...")
-    geom_s_tr, static_s_tr, boundary_s_tr, dyn_s_tr, tgt_s_tr = collect_all_fields(source_train_raw, True)
-    normalizers, big_source_train = stack_and_fit_transform(
-        geom_s_tr, static_s_tr, boundary_s_tr, dyn_s_tr, tgt_s_tr
+    logger.info("Fitting source-domain normalizers incrementally...")
+    normalizers = fit_normalizers_from_sample_index(source_train_raw)
+    source_train_ds = LazyNormalizedDataset(
+        base_dataset=source_train_raw,
+        normalizers=normalizers,
+        query_res=source_data_config.query_res,
+        apply_noise=True,
     )
-    source_train_ds = NormalizedDataset(
-        geometry=big_source_train["geometry"],
-        static=big_source_train["static"],
-        boundary=big_source_train["boundary"],
-        dynamic=big_source_train["dynamic"],
-        target=big_source_train["target"],
-        query_res=source_data_config.query_res
-    )
-    source_train_loader = DataLoader(
-        source_train_ds, batch_size=source_data_config.batch_size, shuffle=True
+    source_train_loader = create_loader_from_config(
+        source_train_ds,
+        source_data_config,
+        shuffle=True,
     )
     
-    # Collect and normalize validation data
-    logger.info("Collecting and normalizing validation data...")
-    geom_s_val, static_s_val, boundary_s_val, dyn_s_val, tgt_s_val = collect_all_fields(source_val_raw, True)
-    _, big_source_val = stack_and_fit_transform(
-        geom_s_val, static_s_val, boundary_s_val, dyn_s_val, tgt_s_val,
-        normalizers=normalizers, fit_normalizers=False
+    logger.info("Preparing lazily normalized validation dataset...")
+    source_val_ds = LazyNormalizedDataset(
+        base_dataset=source_val_raw,
+        normalizers=normalizers,
+        query_res=source_data_config.query_res,
+        apply_noise=False,
     )
-    source_val_ds = NormalizedDataset(
-        geometry=big_source_val["geometry"],
-        static=big_source_val["static"],
-        boundary=big_source_val["boundary"],
-        dynamic=big_source_val["dynamic"],
-        target=big_source_val["target"],
-        query_res=source_data_config.query_res
-    )
-    source_val_loader = DataLoader(
-        source_val_ds, batch_size=source_data_config.batch_size, shuffle=False
+    source_val_loader = create_loader_from_config(
+        source_val_ds,
+        source_data_config,
+        shuffle=False,
     )
     
     # Create model
@@ -261,19 +264,39 @@ def pretrain_model(config, device, is_logger, source_data_config, logger=None):
         inverse_test=True
     )
     data_processor.wrap(model)
+
+    spatial_shape = getattr(source_data_config, "query_res", None)
+    if spatial_shape is None:
+        resolution = getattr(source_data_config, "resolution", None)
+        spatial_shape = [resolution, resolution] if resolution is not None else None
+    mixed_precision_enabled = resolve_amp_autocast_enabled(
+        config.training.get("amp_autocast", False),
+        device=device,
+        spatial_shape=spatial_shape,
+        logger=logger if hasattr(logger, "warning") else None,
+        context="FloodForecaster pretraining",
+    )
     
     # Create trainer using PhysicsNeMo-style trainer
     n_epochs = config.training.get("n_epochs_source", config.training.get("n_epochs", 100))
+    eval_interval = resolve_eval_interval(config)
     logger.info(f"Creating NeuralOperatorTrainer for {n_epochs} epochs...")
     trainer_src = NeuralOperatorTrainer(
         model=model,
         n_epochs=n_epochs,
         data_processor=data_processor,
         device=device,
+        mixed_precision=mixed_precision_enabled,
+        eval_interval=eval_interval,
         wandb_log=config.wandb.get("log", False),
         verbose=is_logger,
         logger=logger if hasattr(logger, 'info') else None,
+        checkpoint_stage="pretrain",
     )
+    trainer_src.source_train_loader = source_train_loader
+    trainer_src.source_val_loader = source_val_loader
+    trainer_src.source_train_dataset = source_train_ds
+    trainer_src.source_val_dataset = source_val_ds
 
     # Train using neuralop 2.0.0 API
     save_dir = os.path.join(config.checkpoint.get("save_dir", "./checkpoints"), "pretrain")
@@ -296,38 +319,13 @@ def pretrain_model(config, device, is_logger, source_data_config, logger=None):
         save_every=save_every,  # Save checkpoint every N epochs (from config)
         resume_from_dir=config.checkpoint.get("resume_from_source", None),
     )
-    
-    # Explicitly save final pretrained model checkpoint using PhysicsNeMo checkpoint system
-    # Ensure directory exists before saving
-    os.makedirs(save_dir, exist_ok=True)
-    logger.info(f"Saving final pretrained model checkpoint to {save_dir}")
-    
-    # Save model using helper function that handles PyTorch submodules
-    # If it returns True, model was saved separately (as PyTorch model)
-    model_saved_separately = save_model_checkpoint(
-        model=model,
-        save_dir=save_dir,
-        epoch=n_epochs - 1,  # Final epoch (0-indexed)
-        metadata={"stage": "pretrain", "final_epoch": True},
-    )
-    
-    # Save optimizer, scheduler, and metadata using PhysicsNeMo
-    # Include model only if it wasn't saved separately
-    save_checkpoint(
-        path=save_dir,
-        models=None if model_saved_separately else model,
-        optimizer=optimizer_src,
-        scheduler=scheduler_src,
-        scaler=None,
-        epoch=n_epochs - 1,
-        metadata={"stage": "pretrain", "final_epoch": True},
-    )
-    logger.info("Saved pretrained model checkpoint using PhysicsNeMo format")
-    
-    # Save normalizers to checkpoint directory
-    normalizers_path = os.path.join(save_dir, "normalizers.pt")
-    torch.save(normalizers, normalizers_path)
-    logger.info(f"Saved normalizers to {normalizers_path}")
+
+    dist_manager = DistributedManager()
+    if dist_manager.rank == 0:
+        os.makedirs(save_dir, exist_ok=True)
+        normalizers_path = os.path.join(save_dir, "normalizers.pt")
+        torch.save(normalizers, normalizers_path)
+        logger.info(f"Saved normalizers to {normalizers_path}")
     
     logger.info("Pretraining completed!")
     return model, normalizers, trainer_src

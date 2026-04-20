@@ -31,28 +31,16 @@ from typing import Any, Dict, Optional
 import hydra
 import torch
 import wandb
-from hydra.utils import to_absolute_path
 from omegaconf import DictConfig, OmegaConf
-from torch.utils.data import DataLoader, random_split
 
-from neuralop import get_model
 from neuralop.utils import get_wandb_api_key
 
 from physicsnemo.distributed.manager import DistributedManager
 from physicsnemo.launch.logging import PythonLogger, RankZeroLoggingWrapper
-from physicsnemo.launch.logging.wandb import initialize_wandb
 
-from datasets import (
-    FloodDatasetWithQueryPoints,
-    NormalizedDataset,
-)
-from data_processing import FloodGINODataProcessor
 from training.pretraining import pretrain_model
 from training.domain_adaptation import adapt_model
-from utils.normalization import (
-    collect_all_fields,
-    stack_and_fit_transform,
-)
+from utils.runtime import seed_everything
 
 
 def _register_hydra_resolvers() -> None:
@@ -218,9 +206,9 @@ def train_flood_forecaster(cfg: DictConfig) -> None:
     log_section(log_rank_zero, "FLOOD FORECASTER - Training and Evaluation Pipeline")
 
     try:
-        # Get device from distributed manager or config
-        device = dist.device if dist.device is not None else cfg.distributed.device
+        device = dist.device
         is_logger = dist.rank == 0
+        seed_everything(cfg.distributed.seed, dist.rank)
 
         # Log device information prominently
         log_rank_zero.info("=" * 50)
@@ -234,6 +222,11 @@ def train_flood_forecaster(cfg: DictConfig) -> None:
             )
         log_rank_zero.info(f"Using device: {device}")
         log_rank_zero.info(f"Distributed: rank={dist.rank}, world_size={dist.world_size}")
+        if hasattr(cfg, "data_io"):
+            log_rank_zero.info(
+                f"Data I/O backend: {cfg.data_io.backend} "
+                f"(cache_dir={cfg.data_io.cache_dir_name}, run_cache_size={cfg.data_io.run_cache_size})"
+            )
         log_rank_zero.info("=" * 50)
 
         if not torch.cuda.is_available():
@@ -301,11 +294,11 @@ def train_flood_forecaster(cfg: DictConfig) -> None:
                 project=cfg.wandb.project,
                 entity=cfg.wandb.entity,
             )
+            wandb.init(**wandb_init_args)
             if cfg.wandb.sweep:
                 for key in wandb.config.keys():
                     if hasattr(cfg, "params"):
                         cfg.params[key] = wandb.config[key]
-            wandb.init(**wandb_init_args)
             log_rank_zero.info(f"W&B initialized: project={cfg.wandb.project}, name={wandb_name}")
 
         # Stage 1: Pretraining on source domain
@@ -318,78 +311,8 @@ def train_flood_forecaster(cfg: DictConfig) -> None:
             logger=log_rank_zero,
         )
 
-        # Recreate source loaders for domain adaptation
-        log_rank_zero.info("Recreating source loaders for domain adaptation...")
-        source_full_dataset = FloodDatasetWithQueryPoints(
-            data_root=cfg.source_data.root,
-            n_history=cfg.source_data.n_history,
-            xy_file=cfg.source_data.get("xy_file", None),
-            query_res=cfg.source_data.get("query_res", [64, 64]),
-            static_files=cfg.source_data.get("static_files", []),
-            dynamic_patterns=cfg.source_data.get("dynamic_patterns", {}),
-            boundary_patterns=cfg.source_data.get("boundary_patterns", {}),
-            raise_on_smaller=True,
-            skip_before_timestep=cfg.source_data.get("skip_before_timestep", 0),
-            noise_type=cfg.source_data.get("noise_type", "none"),
-            noise_std=cfg.source_data.get("noise_std", None),
-        )
-        train_sz_source = int(0.9 * len(source_full_dataset))
-        source_train_raw, source_val_raw = random_split(
-            source_full_dataset,
-            [train_sz_source, len(source_full_dataset) - train_sz_source],
-        )
-
-        # Move normalizers to CPU for data transformation
-        for norm in normalizers.values():
-            norm.to("cpu")
-
-        geom_s_tr, static_s_tr, boundary_s_tr, dyn_s_tr, tgt_s_tr = collect_all_fields(
-            source_train_raw, True
-        )
-        _, big_source_train = stack_and_fit_transform(
-            geom_s_tr,
-            static_s_tr,
-            boundary_s_tr,
-            dyn_s_tr,
-            tgt_s_tr,
-            normalizers=normalizers,
-            fit_normalizers=False,
-        )
-        source_train_ds = NormalizedDataset(
-            geometry=big_source_train["geometry"],
-            static=big_source_train["static"],
-            boundary=big_source_train["boundary"],
-            dynamic=big_source_train["dynamic"],
-            target=big_source_train["target"],
-            query_res=cfg.source_data.query_res,
-        )
-        source_train_loader = DataLoader(
-            source_train_ds, batch_size=cfg.source_data.batch_size, shuffle=True
-        )
-
-        geom_s_val, static_s_val, boundary_s_val, dyn_s_val, tgt_s_val = collect_all_fields(
-            source_val_raw, True
-        )
-        _, big_source_val = stack_and_fit_transform(
-            geom_s_val,
-            static_s_val,
-            boundary_s_val,
-            dyn_s_val,
-            tgt_s_val,
-            normalizers=normalizers,
-            fit_normalizers=False,
-        )
-        source_val_ds = NormalizedDataset(
-            geometry=big_source_val["geometry"],
-            static=big_source_val["static"],
-            boundary=big_source_val["boundary"],
-            dynamic=big_source_val["dynamic"],
-            target=big_source_val["target"],
-            query_res=cfg.source_data.query_res,
-        )
-        source_val_loader = DataLoader(
-            source_val_ds, batch_size=cfg.source_data.batch_size, shuffle=False
-        )
+        source_train_loader = trainer_src.source_train_loader
+        source_val_loader = trainer_src.source_val_loader
 
         # Stage 2: Domain adaptation
         log_section(log_rank_zero, "Stage 2: Domain Adaptation")
