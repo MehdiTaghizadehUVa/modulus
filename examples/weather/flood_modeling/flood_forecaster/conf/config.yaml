@@ -61,13 +61,13 @@ source_data:
     - "M40_FA.txt"
     - "M40_A.txt"
     - "M40_CU.txt"
-  dynamic_patterns:  # Filename patterns for dynamic variables ({} will be replaced with timestep)
+  dynamic_patterns:  # Filename patterns for dynamic variables ({} will be replaced with run ID from train.txt)
     WD: "M40_WD_{}.txt"  # Water depth pattern
     VX: "M40_VX_{}.txt"  # X-velocity pattern
     VY: "M40_VY_{}.txt"  # Y-velocity pattern
-  boundary_patterns:  # Filename patterns for boundary conditions ({} will be replaced with timestep)
+  boundary_patterns:  # Filename patterns for boundary conditions ({} will be replaced with run ID from train.txt)
     inflow: "M40_US_InF_{}.txt"  # Inflow boundary condition pattern
-  noise_type: "none"  # Type of noise to add to data. Options: "none", "gaussian" (string)
+  noise_type: "none"  # Dynamic-history noise. Options: "none", "only_last", "correlated", "uncorrelated", "random_walk"
   noise_std: [0.01, 0.001, 0.001]  # Standard deviation for noise per channel [WD, VX, VY] (list of floats)
   rollout_length: 78  # Number of timesteps for autoregressive rollout (integer)
   skip_before_timestep: 12  # Number of initial timesteps to skip before starting rollout (integer)
@@ -95,13 +95,13 @@ target_data:
     - "M40_FA.txt"
     - "M40_A.txt"
     - "M40_CU.txt"
-  dynamic_patterns:  # Filename patterns for dynamic variables ({} will be replaced with timestep)
+  dynamic_patterns:  # Filename patterns for dynamic variables ({} will be replaced with run ID from train.txt)
     WD: "M40_WD_{}.txt"  # Water depth pattern
     VX: "M40_VX_{}.txt"  # X-velocity pattern
     VY: "M40_VY_{}.txt"  # Y-velocity pattern
-  boundary_patterns:  # Filename patterns for boundary conditions ({} will be replaced with timestep)
+  boundary_patterns:  # Filename patterns for boundary conditions ({} will be replaced with run ID from train.txt)
     inflow: "M40_US_InF_{}.txt"  # Inflow boundary condition pattern
-  noise_type: "none"  # Type of noise to add to data. Options: "none", "gaussian" (string)
+  noise_type: "none"  # Dynamic-history noise. Options: "none", "only_last", "correlated", "uncorrelated", "random_walk"
   noise_std: [0.01, 0.001, 0.001]  # Standard deviation for noise per channel [WD, VX, VY] (list of floats)
   rollout_length: 78  # Number of timesteps for autoregressive rollout (integer)
   skip_before_timestep: 12  # Number of initial timesteps to skip before starting rollout (integer)
@@ -122,11 +122,11 @@ rollout_data:
     - "M40_FA.txt"
     - "M40_A.txt"
     - "M40_CU.txt"
-  dynamic_patterns:  # Filename patterns for dynamic variables ({} will be replaced with timestep)
+  dynamic_patterns:  # Filename patterns for dynamic variables ({} will be replaced with run ID from train.txt)
     WD: "M40_WD_{}.txt"  # Water depth pattern
     VX: "M40_VX_{}.txt"  # X-velocity pattern
     VY: "M40_VY_{}.txt"  # Y-velocity pattern
-  boundary_patterns:  # Filename patterns for boundary conditions ({} will be replaced with timestep)
+  boundary_patterns:  # Filename patterns for boundary conditions ({} will be replaced with run ID from train.txt)
     inflow: "M40_US_InF_{}.txt"  # Inflow boundary condition pattern
 
 # Model configuration (for neuralop get_model compatibility)

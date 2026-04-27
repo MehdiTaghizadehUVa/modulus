@@ -57,6 +57,8 @@ class GradientReversal(physicsnemo.Module):
     ----------
     lambda_ : float, optional, default=1.0
         Gradient scaling factor applied during the backward pass.
+    lambda_max : float, optional
+        Backward-compatible alias for ``lambda_``.
 
     Forward
     -------
@@ -70,8 +72,10 @@ class GradientReversal(physicsnemo.Module):
         and reversed gradients during backpropagation.
     """
 
-    def __init__(self, lambda_: float = 1.0):
+    def __init__(self, lambda_: float = 1.0, lambda_max: Optional[float] = None):
         super().__init__(meta=ModelMetaData())
+        if lambda_max is not None:
+            lambda_ = lambda_max
         self.lambda_ = lambda_
 
     def forward(
