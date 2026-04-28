@@ -31,7 +31,6 @@ from .normalization import (
 from .checkpointing import (
     BEST_CHECKPOINT_FILENAME,
     resolve_checkpoint_epoch,
-    resolve_legacy_neuralop_checkpoint_name,
     validate_checkpoint_files,
     write_best_checkpoint_metadata,
 )
@@ -55,7 +54,6 @@ __all__ = [
     "make_torch_generator",
     "resolve_amp_autocast_enabled",
     "resolve_checkpoint_epoch",
-    "resolve_legacy_neuralop_checkpoint_name",
     "seed_everything",
     "set_loader_epoch",
     "split_dataset",

@@ -110,6 +110,7 @@ target_data:
 # Rollout evaluation dataset
 rollout_data:
   root: "C:/Users/jrj6wm/Box/Flood_Modeling/Simulations/New_Results/Test_20_Paper"  # Test/evaluation data path
+  list_file_name: "test.txt"  # Hydrograph list file used for rollout evaluation
   xy_file: "M40_XY.txt"  # Filename for XY coordinates (geometry file)
   static_files:
     # Note: M40_XY.txt is included here as a static feature (XY coordinates as features)
@@ -193,7 +194,7 @@ checkpoint:
   save_best: "source_val_l2"  # Metric to monitor for best model saving (e.g., "source_val_l2")
                               # Set to null to disable best model saving
   save_every: null  # Save checkpoint every N epochs (e.g., 10). Set to null to disable interval saving
-                    # Note: save_best takes precedence over save_every if both are set
+                    # A final/latest checkpoint is still written after training
 
 # Rollout output directory
 rollout:
@@ -216,7 +217,7 @@ training:
   scheduler_patience: 5  # Patience for ReduceLROnPlateau (number of epochs with no improvement, integer)
   step_size: 50  # Period of learning rate decay for StepLR (integer, epochs)
   gamma: 0.5  # Multiplicative factor for learning rate decay (float, typically 0.1 to 0.9)
-  da_class_loss_weight: 0.0  # Weight for domain classification adversarial loss (float, 0.0 disables adversarial training)
+  da_class_loss_weight: 0.1  # Weight for domain classification adversarial loss (float, 0.0 disables adversarial training)
   da_lambda_max: 1.0  # Maximum lambda value for domain adaptation gradient reversal (float)
   da_classifier:  # Domain classifier architecture for adversarial domain adaptation
     conv_layers:  # Convolutional layers for domain classifier

@@ -122,6 +122,9 @@ pretraining_module = _load_example_module("training.pretraining", EXAMPLE_ROOT /
 domain_adaptation_module = _load_example_module(
     "training.domain_adaptation", EXAMPLE_ROOT / "training" / "domain_adaptation.py"
 )
+inference_script_module = _load_example_module(
+    "flood_forecaster_inference_script", EXAMPLE_ROOT / "inference.py"
+)
 training_init = _load_example_module("training", EXAMPLE_ROOT / "training" / "__init__.py")
 sys.modules["training"].__dict__.update(training_init.__dict__)
 
@@ -245,6 +248,35 @@ def test_expected_model_files_match_duplicate_model_checkpoint(tmp_path: Path):
     for file_name in expected_files:
         assert (tmp_path / file_name).exists()
     assert validate_checkpoint_files(tmp_path, [classifier_a, classifier_b], 7)["model_files"] == expected_files
+
+def test_cnn_domain_classifier_checkpoint_accepts_omegaconf_config(tmp_path: Path):
+    """Hydra DictConfig inputs should not leak into PhysicsNeMo .mdlus args."""
+    da_cfg = OmegaConf.create(
+        {
+            "conv_layers": [{"out_channels": 5, "kernel_size": 3, "pool_size": 1}],
+            "fc_dim": 2,
+        }
+    )
+    classifier = CNNDomainClassifier(
+        in_channels=4,
+        da_cfg=da_cfg,
+        lambda_max=0.5,
+    )
+    optimizer = torch.optim.Adam(classifier.parameters(), lr=1e-3)
+
+    save_checkpoint(
+        path=str(tmp_path),
+        models=classifier,
+        optimizer=optimizer,
+        scheduler=None,
+        scaler=None,
+        epoch=2,
+    )
+
+    expected_files = expected_model_files(tmp_path, classifier, 2)
+    assert expected_files == ["CNNDomainClassifier.0.2.mdlus"]
+    assert (tmp_path / expected_files[0]).exists()
+    validate_checkpoint_files(tmp_path, classifier, 2)
 
 def test_best_checkpoint_sidecar_uses_class_name_files(tmp_path: Path):
     model = GINOWrapper(FakeGINOBackbone())
@@ -777,6 +809,92 @@ def test_resolve_eval_interval_rejects_non_positive_values():
     else:
         raise AssertionError("resolve_eval_interval should reject non-positive values")
 
+def test_domain_adaptation_weight_config_defaults():
+    """Full/default configs should enable adversarial DA, while short/smoke stay cheap."""
+    from hydra import compose, initialize_config_dir
+    from hydra.core.global_hydra import GlobalHydra
+
+    GlobalHydra.instance().clear()
+    try:
+        with initialize_config_dir(config_dir=str(EXAMPLE_ROOT / "conf"), version_base="1.3"):
+            base_cfg = compose(config_name="config")
+            short_cfg = compose(config_name="config_short")
+            smoke_cfg = compose(config_name="config_smoke")
+    finally:
+        GlobalHydra.instance().clear()
+
+    assert base_cfg.training.da_class_loss_weight == pytest.approx(0.1)
+    assert short_cfg.training.da_class_loss_weight == pytest.approx(0.0)
+    assert smoke_cfg.training.da_class_loss_weight == pytest.approx(0.0)
+    assert smoke_cfg.source_data.rollout_length == 4
+    smoke_cfg_unresolved = OmegaConf.to_container(smoke_cfg, resolve=False)
+    assert smoke_cfg_unresolved["rollout_data"]["root"].endswith("smoke_data/target")
+    assert smoke_cfg_unresolved["rollout_data"]["list_file_name"] == "train.txt"
+
+def test_inference_normalizer_fallback_uses_full_source_train_split(monkeypatch):
+    """Inference fallback should refit on the deterministic pretraining split, not a 100-sample slice."""
+    captured = {}
+
+    class FakeSourceDataset:
+        def __init__(self, **kwargs):
+            captured["dataset_kwargs"] = kwargs
+
+        def __len__(self):
+            return 10
+
+    def fake_split_dataset(dataset, lengths, seed, offset):
+        captured["split"] = {
+            "dataset": dataset,
+            "lengths": lengths,
+            "seed": seed,
+            "offset": offset,
+        }
+        return "train-subset", "val-subset"
+
+    def fake_fit_normalizers(subset):
+        captured["fit_subset"] = subset
+        return {"target": "normalizer"}
+
+    monkeypatch.setattr(inference_script_module, "FloodDatasetWithQueryPoints", FakeSourceDataset)
+    monkeypatch.setattr(inference_script_module, "split_dataset", fake_split_dataset)
+    monkeypatch.setattr(inference_script_module, "fit_normalizers_from_sample_index", fake_fit_normalizers)
+
+    cfg = OmegaConf.create(
+        {
+            "source_data": {
+                "n_history": 3,
+                "xy_file": "M40_XY.txt",
+                "query_res": [32, 32],
+                "static_files": [],
+                "dynamic_patterns": {},
+                "boundary_patterns": {},
+                "skip_before_timestep": 0,
+            },
+            "distributed": {"seed": 123},
+        }
+    )
+    data_io_cfg = OmegaConf.create(
+        {
+            "backend": "auto",
+            "cache_dir_name": ".flood_cache",
+            "rebuild_cache": False,
+            "run_cache_size": 4,
+        }
+    )
+
+    normalizers = inference_script_module.recreate_normalizers_from_source_split(
+        cfg,
+        "source-root",
+        data_io_cfg,
+    )
+
+    assert normalizers == {"target": "normalizer"}
+    assert captured["dataset_kwargs"]["data_root"] == "source-root"
+    assert captured["split"]["lengths"] == [9, 1]
+    assert captured["split"]["seed"] == 123
+    assert captured["split"]["offset"] == 11
+    assert captured["fit_subset"] == "train-subset"
+
 
 # ---- Model Module Coverage ----
 
@@ -1143,14 +1261,16 @@ def sample_dict():
     # query_points should be (B, H, W, 2) or (H, W, 2) for latent queries
     # Using a simple grid: (8, 8, 2) for 2D
     H, W = 8, 8
+    geometry = torch.rand(num_cells, 2).unsqueeze(0).expand(batch_size, -1, -1).clone()
+    query_points = torch.rand(H, W, 2).unsqueeze(0).expand(batch_size, -1, -1, -1).clone()
 
     return {
-        "geometry": torch.rand(batch_size, num_cells, 2),
+        "geometry": geometry,
         "static": torch.rand(batch_size, num_cells, 7),
         "boundary": torch.rand(batch_size, n_history, 1),
         "dynamic": torch.rand(batch_size, n_history, num_cells, 3),
         "target": torch.rand(batch_size, num_cells, 3),
-        "query_points": torch.rand(batch_size, H, W, 2),  # Required for preprocessing
+        "query_points": query_points,  # Required for preprocessing
     }
 
 @pytest.fixture
@@ -1192,6 +1312,28 @@ def test_data_processor_preprocess(sample_dict, device):
     assert result["x"].shape == (2, 100, 19)
     expected_boundary = sample_dict["boundary"].to(device).reshape(2, 1, 3).expand(-1, 100, -1)
     torch.testing.assert_close(result["x"][..., 7:10], expected_boundary)
+
+@pytest.mark.parametrize(
+    ("mutated_key", "message"),
+    [
+        ("geometry", "geometry is batched with non-identical entries"),
+        ("query_points", "query_points is batched with non-identical entries"),
+    ],
+)
+@pytest.mark.parametrize("device", _DEVICES)
+def test_data_processor_rejects_non_identical_batched_shared_tensors(
+    sample_dict,
+    mutated_key,
+    message,
+    device,
+):
+    """Shared geometry/query batches must be exact copies before collapsing to item zero."""
+    processor = FloodGINODataProcessor(device=device)
+    bad_sample = _clone_structure(sample_dict)
+    bad_sample[mutated_key][1] = bad_sample[mutated_key][1] + 1.0
+
+    with pytest.raises(ValueError, match=message):
+        processor.preprocess(bad_sample)
 
 @pytest.mark.parametrize("device", _DEVICES)
 def test_data_processor_postprocess(device):
@@ -1268,7 +1410,33 @@ def test_ginowrapper_forward(fake_gino_model, device):
         return_features=True,
     )
     assert isinstance(features, torch.Tensor)
-    assert features.shape == (1, 64, 64)  # (B, latent_points, hidden_channels)
+    assert features.shape == (1, 64, 8, 8)  # (B, hidden_channels, H, W)
+
+@pytest.mark.parametrize("device", _DEVICES)
+def test_ginowrapper_feature_grid_feeds_domain_classifier(device):
+    """GINOWrapper feature returns should satisfy the adversarial DA classifier contract."""
+    wrapper = GINOWrapper(FakeGINOBackbone(fno_hidden_channels=4)).to(device)
+    classifier = CNNDomainClassifier(
+        in_channels=4,
+        da_cfg={"conv_layers": [{"out_channels": 4, "kernel_size": 1, "pool_size": 1}], "fc_dim": 1},
+    ).to(device)
+    num_cells = 16
+    input_geom = torch.rand(1, num_cells, 2, device=device)
+    latent_queries = torch.rand(1, 4, 4, 2, device=device)
+    output_queries = torch.rand(1, num_cells, 2, device=device)
+    x = torch.rand(1, num_cells, 10, device=device)
+
+    _, features = wrapper(
+        input_geom=input_geom,
+        latent_queries=latent_queries,
+        output_queries=output_queries,
+        x=x,
+        return_features=True,
+    )
+    logits = classifier(features)
+
+    assert features.shape == (1, 4, 4, 4)
+    assert logits.shape == (1, 1)
 
 @pytest.mark.parametrize("device", _DEVICES)
 def test_lploss_wrapper(device):
@@ -1897,19 +2065,10 @@ def test_trainer_resume_from_checkpoint_restores_best_metric_metadata(tmp_path, 
     assert trainer.start_epoch == 4
     assert trainer.best_metric_value == pytest.approx(0.25)
 
-def test_trainer_resume_from_checkpoint_legacy_fallback_unwraps_inner_model(tmp_path, monkeypatch):
-    """Legacy fallback should unwrap `gino.inner_model` before calling neuralop loader."""
-
-    class FakeWrappedModel(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.gino = types.SimpleNamespace(inner_model="inner-gino-model")
-
-        def forward(self, x=None, **kwargs):
-            return x
-
+def test_trainer_resume_from_checkpoint_requires_physicsnemo_files(tmp_path, monkeypatch):
+    """Resume should fail fast when a PhysicsNeMo checkpoint cannot be resolved."""
     trainer = NeuralOperatorTrainer(
-        model=FakeWrappedModel(),
+        model=nn.Linear(4, 2),
         n_epochs=1,
         device="cpu",
         verbose=False,
@@ -1917,27 +2076,51 @@ def test_trainer_resume_from_checkpoint_legacy_fallback_unwraps_inner_model(tmp_
     trainer.optimizer = "optimizer"
     trainer.scheduler = "scheduler"
 
-    captured = {}
-
-    def fake_load_training_state(save_dir, save_name, model, optimizer, scheduler):
-        captured["model"] = model
-        captured["save_name"] = save_name
-        return model, optimizer, scheduler, None, 5
-
-    import neuralop.training.training_state as training_state_module
-
     def fail_resolve_checkpoint_epoch(path, mode):
         raise FileNotFoundError("missing physicsnemo checkpoint")
 
     monkeypatch.setattr(trainer_module, "resolve_checkpoint_epoch", fail_resolve_checkpoint_epoch)
-    monkeypatch.setattr(trainer_module, "resolve_legacy_neuralop_checkpoint_name", lambda path, mode: "model")
-    monkeypatch.setattr(training_state_module, "load_training_state", fake_load_training_state)
 
-    trainer._resume_from_checkpoint(tmp_path)
+    with pytest.raises(FileNotFoundError, match="missing physicsnemo checkpoint"):
+        trainer._resume_from_checkpoint(tmp_path)
 
-    assert captured["model"] == "inner-gino-model"
-    assert captured["save_name"] == "model"
-    assert trainer.start_epoch == 6
+def test_trainer_save_every_none_saves_best_and_final_latest(tmp_path, monkeypatch):
+    """save_every=None should suppress interval saves but still write best and final latest."""
+
+    class TinyKeywordModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = nn.Linear(2, 1)
+
+        def forward(self, x=None):
+            return self.linear(x)
+
+    model = TinyKeywordModel()
+    samples = [{"x": torch.ones(2), "y": torch.ones(1)} for _ in range(2)]
+    loader = DataLoader(_DictDataset(samples), batch_size=2, shuffle=False)
+    trainer = NeuralOperatorTrainer(model=model, n_epochs=1, device="cpu", verbose=False)
+    optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1)
+    saved = []
+
+    def fake_save_checkpoint(save_dir, is_best=False):
+        saved.append((trainer.epoch, is_best))
+
+    monkeypatch.setattr(trainer, "_save_checkpoint", fake_save_checkpoint)
+
+    trainer.train(
+        train_loader=loader,
+        test_loaders={"val": loader},
+        optimizer=optimizer,
+        scheduler=scheduler,
+        training_loss=lambda pred, y=None, **_: torch.nn.functional.mse_loss(pred, y),
+        eval_losses={"l2": lambda pred, y=None, **_: torch.nn.functional.mse_loss(pred, y)},
+        save_dir=tmp_path / "ckpt",
+        save_best="val_l2",
+        save_every=None,
+    )
+
+    assert saved == [(0, True), (0, False)]
 
 
 # ---- Pretraining And Domain Adaptation Coverage ----
@@ -2244,6 +2427,120 @@ def test_domain_adaptation_respects_da_lambda_max(device, tmp_path):
     expected = lambda_max * (2.0 / (1.0 + torch.exp(torch.tensor(-10.0))) - 1.0)
     assert abs(classifier.grl.lambda_ - float(expected)) < 1e-6
 
+def test_adapt_model_constructs_domain_classifier_with_keyword_args(tmp_path, monkeypatch):
+    """adapt_model should not pass da_lambda_max positionally as da_cfg."""
+
+    class FakeTargetDataset(Dataset):
+        def __init__(self, **kwargs):
+            self.samples = [{"x": torch.rand(10), "y": torch.rand(3)} for _ in range(4)]
+
+        def __len__(self):
+            return len(self.samples)
+
+        def __getitem__(self, idx):
+            return self.samples[idx]
+
+    class FakeLazyNormalizedDataset(Dataset):
+        def __init__(self, base_dataset, normalizers, query_res, apply_noise):
+            self.base_dataset = base_dataset
+
+        def __len__(self):
+            return len(self.base_dataset)
+
+        def __getitem__(self, idx):
+            return self.base_dataset[idx]
+
+    class FakeAdaptTrainer:
+        def __init__(self, **kwargs):
+            captured["trainer_domain_classifier"] = kwargs["domain_classifier"]
+
+        def train_domain_adaptation(self, **kwargs):
+            captured["class_loss_weight"] = kwargs["class_loss_weight"]
+            Path(kwargs["save_dir"]).mkdir(parents=True, exist_ok=True)
+
+    captured = {}
+    real_classifier_cls = domain_adaptation_module.CNNDomainClassifier
+
+    def fake_classifier(*args, **kwargs):
+        captured["classifier_args"] = args
+        captured["classifier_kwargs"] = kwargs
+        return real_classifier_cls(*args, **kwargs)
+
+    model = _SimpleDARegressionModel(feature_channels=4)
+    model.fno_hidden_channels = 4
+    source_samples = [{"x": torch.rand(10), "y": torch.rand(3)} for _ in range(4)]
+    source_loader = DataLoader(_DictDataset(source_samples), batch_size=2, shuffle=False)
+    config = OmegaConf.create(
+        {
+            "training": {
+                "da_classifier": {
+                    "conv_layers": [{"out_channels": 4, "kernel_size": 1, "pool_size": 1}],
+                    "fc_dim": 1,
+                },
+                "da_lambda_max": 0.5,
+                "adapt_learning_rate": 1e-3,
+                "learning_rate": 1e-3,
+                "weight_decay": 0.0,
+                "training_loss": "l2",
+                "testing_loss": "l2",
+                "amp_autocast": False,
+                "n_epochs_adapt": 0,
+                "da_class_loss_weight": 0.1,
+                "eval_interval": 1,
+            },
+            "checkpoint": {
+                "save_dir": str(tmp_path),
+                "resume_from_adapt": None,
+            },
+            "distributed": {"seed": 123},
+            "data_io": {},
+            "wandb": {"eval_interval": 1},
+        }
+    )
+    target_data_config = OmegaConf.create(
+        {
+            "root": "target-root",
+            "n_history": 3,
+            "xy_file": "M40_XY.txt",
+            "query_res": [2, 2],
+            "static_files": [],
+            "dynamic_patterns": {},
+            "boundary_patterns": {},
+            "skip_before_timestep": 0,
+            "noise_type": "none",
+            "noise_std": None,
+            "batch_size": 2,
+            "num_workers": 0,
+            "pin_memory": False,
+            "persistent_workers": False,
+        }
+    )
+    normalizers = {"target": nn.Identity()}
+
+    monkeypatch.setattr(domain_adaptation_module, "FloodDatasetWithQueryPoints", FakeTargetDataset)
+    monkeypatch.setattr(domain_adaptation_module, "LazyNormalizedDataset", FakeLazyNormalizedDataset)
+    monkeypatch.setattr(domain_adaptation_module, "CNNDomainClassifier", fake_classifier)
+    monkeypatch.setattr(domain_adaptation_module, "DomainAdaptationTrainer", FakeAdaptTrainer)
+
+    domain_adaptation_module.adapt_model(
+        model=model,
+        normalizers=normalizers,
+        data_processor=None,
+        config=config,
+        device="cpu",
+        is_logger=False,
+        target_data_config=target_data_config,
+        source_train_loader=source_loader,
+        source_val_loader=source_loader,
+        logger=MagicMock(),
+    )
+
+    assert captured["classifier_args"] == ()
+    assert captured["classifier_kwargs"]["in_channels"] == 4
+    assert captured["classifier_kwargs"]["da_cfg"] == config.training.da_classifier
+    assert captured["classifier_kwargs"]["lambda_max"] == pytest.approx(0.5)
+    assert captured["class_loss_weight"] == pytest.approx(0.1)
+
 @pytest.mark.parametrize("device", _DEVICES)
 def test_domain_adaptation_eval_normalizes_by_postprocessed_sample_count(device):
     """DA validation should divide summed loss by the postprocessed sample count."""
@@ -2404,6 +2701,59 @@ def test_domain_adaptation_writes_best_checkpoint_sidecar(device, tmp_path):
     payload = json.loads(sidecar.read_text())
     assert payload["metric_name"] == "target_val"
     assert payload["epoch"] == 0
+
+@pytest.mark.parametrize("device", _DEVICES)
+def test_domain_adaptation_save_every_none_saves_best_and_final_latest(device, tmp_path, monkeypatch):
+    """DA save_every=None should suppress interval saves but keep best and final latest checkpoints."""
+    model = _SimpleDARegressionModel().to(device)
+    classifier = CNNDomainClassifier(
+        in_channels=4,
+        lambda_max=1.0,
+        da_cfg={"conv_layers": [{"out_channels": 4, "kernel_size": 1, "pool_size": 1}], "fc_dim": 1},
+    ).to(device)
+    trainer = DomainAdaptationTrainer(
+        model=model,
+        data_processor=None,
+        domain_classifier=classifier,
+        device=device,
+        verbose=False,
+    )
+    samples = [{"x": torch.rand(10).to(device), "y": torch.rand(3).to(device)} for _ in range(4)]
+    loader = DataLoader(_DictDataset(samples), batch_size=2, shuffle=False)
+    optimizer = torch.optim.Adam(
+        list(model.parameters()) + list(classifier.parameters()),
+        lr=1e-3,
+    )
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.9)
+    saved = []
+
+    def fake_save_checkpoint(
+        save_dir,
+        optimizer,
+        scheduler,
+        epoch,
+        save_classifier=True,
+        is_best=False,
+        metric_name=None,
+    ):
+        saved.append((epoch, is_best))
+
+    monkeypatch.setattr(trainer, "_save_checkpoint", fake_save_checkpoint)
+
+    trainer.train_domain_adaptation(
+        src_loader=loader,
+        tgt_loader=loader,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        training_loss=lambda pred, y=None, **_: torch.nn.functional.mse_loss(pred, y),
+        class_loss_weight=0.0,
+        adaptation_epochs=1,
+        save_every=None,
+        save_dir=tmp_path / "adapt_no_interval",
+        val_loaders={"target_val": loader},
+    )
+
+    assert saved == [(0, True), (0, False)]
 
 @pytest.mark.parametrize("device", _DEVICES)
 def test_pretrain_model_wires_datasets_loaders_and_normalizer_save(device, tmp_path, monkeypatch):
@@ -2643,8 +2993,8 @@ def test_domain_adaptation_save_checkpoint_includes_classifier_and_best_sidecar(
     assert saved["best"]["metric_name"] == "target_val"
     assert saved["best"]["metric_value"] == pytest.approx(0.2)
 
-def test_domain_adaptation_resume_from_checkpoint_legacy_loads_classifier(tmp_path, monkeypatch):
-    """Legacy DA resume should restore both trainer epoch and classifier weights."""
+def test_domain_adaptation_resume_requires_physicsnemo_checkpoint(tmp_path, monkeypatch):
+    """DA resume should not fall back to neuralop-format checkpoints."""
     model = _SimpleDARegressionModel()
     classifier = CNNDomainClassifier(
         in_channels=4,
@@ -2658,44 +3008,22 @@ def test_domain_adaptation_resume_from_checkpoint_legacy_loads_classifier(tmp_pa
         device="cpu",
         verbose=False,
     )
-
-    reference_classifier = CNNDomainClassifier(
-        in_channels=4,
-        lambda_max=1.0,
-        da_cfg={"conv_layers": [{"out_channels": 4, "kernel_size": 1, "pool_size": 1}], "fc_dim": 1},
-    )
-    with torch.no_grad():
-        for param in reference_classifier.parameters():
-            param.fill_(7.0)
-    torch.save(reference_classifier.state_dict(), tmp_path / "classifier_state_dict.pt")
-
     optimizer = torch.optim.Adam(
         list(model.parameters()) + list(classifier.parameters()),
         lr=1e-3,
     )
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.9)
 
-    import neuralop.training.training_state as training_state_module
-
     def fail_resolve_checkpoint_epoch(path, mode):
         raise FileNotFoundError("missing physicsnemo checkpoint")
 
     monkeypatch.setattr(domain_adaptation_module, "resolve_checkpoint_epoch", fail_resolve_checkpoint_epoch)
-    monkeypatch.setattr(domain_adaptation_module, "resolve_legacy_neuralop_checkpoint_name", lambda path, mode: "model")
-    monkeypatch.setattr(
-        training_state_module,
-        "load_training_state",
-        lambda save_dir, save_name, model, optimizer, scheduler: (model, optimizer, scheduler, None, 4),
-    )
 
-    epoch = trainer._resume_from_checkpoint(tmp_path, optimizer, scheduler)
+    with pytest.raises(FileNotFoundError, match="missing physicsnemo checkpoint"):
+        trainer._resume_from_checkpoint(tmp_path, optimizer, scheduler)
 
-    assert epoch == 4
-    for key, value in reference_classifier.state_dict().items():
-        assert torch.allclose(trainer.domain_classifier.state_dict()[key], value)
-
-def test_train_domain_adaptation_loads_separate_classifier_checkpoint_fallback(tmp_path, monkeypatch):
-    """`resume_classifier_from_dir` should fall back to legacy classifier_state_dict loading."""
+def test_train_domain_adaptation_classifier_resume_requires_physicsnemo_checkpoint(tmp_path, monkeypatch):
+    """Separate classifier resume should require PhysicsNeMo model files."""
     model = _SimpleDARegressionModel()
     classifier = CNNDomainClassifier(
         in_channels=4,
@@ -2709,17 +3037,6 @@ def test_train_domain_adaptation_loads_separate_classifier_checkpoint_fallback(t
         device="cpu",
         verbose=False,
     )
-
-    reference_classifier = CNNDomainClassifier(
-        in_channels=4,
-        lambda_max=1.0,
-        da_cfg={"conv_layers": [{"out_channels": 4, "kernel_size": 1, "pool_size": 1}], "fc_dim": 1},
-    )
-    with torch.no_grad():
-        for param in reference_classifier.parameters():
-            param.fill_(3.0)
-    torch.save(reference_classifier.state_dict(), tmp_path / "classifier_state_dict.pt")
-
     monkeypatch.setattr(trainer, "_resume_from_checkpoint", lambda *args, **kwargs: -1)
 
     def fail_resolve_checkpoint_epoch(path, mode):
@@ -2735,21 +3052,19 @@ def test_train_domain_adaptation_loads_separate_classifier_checkpoint_fallback(t
     )
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.9)
 
-    trainer.train_domain_adaptation(
-        src_loader=loader,
-        tgt_loader=loader,
-        optimizer=optimizer,
-        scheduler=scheduler,
-        training_loss=lambda pred, y=None, **_: torch.nn.functional.mse_loss(pred, y),
-        class_loss_weight=0.0,
-        adaptation_epochs=0,
-        save_dir=tmp_path / "unused",
-        resume_classifier_from_dir=tmp_path,
-        val_loaders={},
-    )
-
-    for key, value in reference_classifier.state_dict().items():
-        assert torch.allclose(trainer.domain_classifier.state_dict()[key], value)
+    with pytest.raises(FileNotFoundError, match="missing classifier checkpoint"):
+        trainer.train_domain_adaptation(
+            src_loader=loader,
+            tgt_loader=loader,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            training_loss=lambda pred, y=None, **_: torch.nn.functional.mse_loss(pred, y),
+            class_loss_weight=0.0,
+            adaptation_epochs=0,
+            save_dir=tmp_path / "unused",
+            resume_classifier_from_dir=tmp_path,
+            val_loaders={},
+        )
 
 
 # ---- Modern integration smoke coverage ----
@@ -2758,15 +3073,17 @@ def test_train_domain_adaptation_loads_separate_classifier_checkpoint_fallback(t
 def _make_compact_flood_samples(device: str, count: int = 4):
     samples = []
     num_cells = 8
+    geometry = torch.rand(num_cells, 2, device=device)
+    query_points = torch.rand(4, 4, 2, device=device)
     for _ in range(count):
         samples.append(
             {
-                "geometry": torch.rand(num_cells, 2, device=device),
+                "geometry": geometry.clone(),
                 "static": torch.rand(num_cells, 7, device=device),
                 "boundary": torch.rand(3, 1, device=device),
                 "dynamic": torch.rand(3, num_cells, 3, device=device),
                 "target": torch.rand(num_cells, 3, device=device),
-                "query_points": torch.rand(4, 4, 2, device=device),
+                "query_points": query_points.clone(),
             }
         )
     return samples

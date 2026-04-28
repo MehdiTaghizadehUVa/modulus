@@ -134,7 +134,7 @@ Important knobs:
 - `training.learning_rate`, `training.adapt_learning_rate`: optimizer learning rates
 - `training.amp_autocast`: mixed precision toggle
 - `training.da_lambda_max`, `training.da_class_loss_weight`, `training.da_classifier`: domain-adaptation settings
-- `checkpoint.*`: save, resume, and inference checkpoint selection
+- `checkpoint.*`: save, resume, and inference checkpoint selection; `checkpoint.save_every: null` disables interval saves while still writing a final/latest checkpoint
 - `data_io.*`: cache backend and per-process run-cache settings
 
 Hydra overrides work as usual, for example:
@@ -301,10 +301,10 @@ training:
   adapt_learning_rate: 1e-4
   amp_autocast: false
   da_lambda_max: 1.0
-  da_class_loss_weight: 0.0
+  da_class_loss_weight: 0.1
 ```
 
-The full-dataset single-GPU presets reduce these values for memory and speed. For example, `config_full_single_gpu.yaml` uses `batch_size: 1` with `query_res: [32, 32]`, and `config_full_single_gpu_small.yaml` keeps `query_res: [32, 32]` while reducing the model width/depth and using `batch_size: 2`.
+The full/default configs enable adversarial domain adaptation with `da_class_loss_weight: 0.1`. `config_short.yaml` and `config_smoke.yaml` keep `da_class_loss_weight: 0.0` for fast supervised fine-tuning checks. The full-dataset single-GPU presets reduce batch and resolution for memory and speed. For example, `config_full_single_gpu.yaml` uses `batch_size: 1` with `query_res: [32, 32]`, and `config_full_single_gpu_small.yaml` keeps `query_res: [32, 32]` while reducing the model width/depth and using `batch_size: 2`.
 
 ### Domain Adaptation Classifier
 

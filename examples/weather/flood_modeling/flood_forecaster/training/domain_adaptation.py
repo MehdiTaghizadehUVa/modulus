@@ -100,7 +100,6 @@ except ImportError:
 from datasets import FloodDatasetWithQueryPoints, LazyNormalizedDataset
 from utils.checkpointing import (
     resolve_checkpoint_epoch,
-    resolve_legacy_neuralop_checkpoint_name,
     validate_checkpoint_files,
     write_best_checkpoint_metadata,
 )
@@ -295,7 +294,8 @@ class DomainAdaptationTrainer:
         adaptation_epochs : int, optional, default=100
             Number of epochs to train.
         save_every : int, optional
-            Interval at which to save checkpoints.
+            Interval at which to save latest checkpoints. ``None`` disables
+            interval saves; a final/latest checkpoint is still written.
         save_dir : str or Path, optional, default="./ckpt"
             Directory to save checkpoints.
         resume_from_dir : str or Path, optional
@@ -324,57 +324,32 @@ class DomainAdaptationTrainer:
         if resume_from_dir is not None:
             start_epoch = self._resume_from_checkpoint(resume_from_dir, optimizer, scheduler)
         
-        # Optionally resume classifier from separate directory (fallback mechanism)
+        # Optionally resume classifier from a PhysicsNeMo checkpoint directory.
         if resume_classifier_from_dir is not None:
-            classifier_loaded = False
             resume_classifier_dir = Path(resume_classifier_from_dir)
-            
-            # Try PhysicsNeMo format first (classifier saved as second model)
-            try:
-                resolved_epoch = resolve_checkpoint_epoch(resume_classifier_dir, "latest")
-                validate_checkpoint_files(
-                    resume_classifier_dir,
-                    [self.domain_classifier],
-                    resolved_epoch,
-                    require_training_state=False,
-                )
-                metadata_dict = {}
-                load_checkpoint(
-                    path=str(resume_classifier_dir),
-                    models=[self.domain_classifier],
-                    optimizer=None,
-                    scheduler=None,
-                    scaler=None,
-                    epoch=resolved_epoch,
-                    metadata_dict=metadata_dict,
-                    device=self.device,
-                )
-                msg = f"Loaded classifier from PhysicsNeMo checkpoint: {resume_classifier_dir}"
-                if self.logger:
-                    self.logger.info(msg)
-                elif self.verbose:
-                    print(msg)
-                classifier_loaded = True
-            except (FileNotFoundError, KeyError, ValueError):
-                # Fall back to old format (separate classifier_state_dict.pt file)
-                ckpt = resume_classifier_dir / "classifier_state_dict.pt"
-                if ckpt.exists():
-                    self.domain_classifier.load_state_dict(
-                        torch.load(str(ckpt), map_location=self.device)
-                    )
-                    msg = f"Loaded classifier from neuralop checkpoint: {ckpt}"
-                    if self.logger:
-                        self.logger.info(msg)
-                    elif self.verbose:
-                        print(msg)
-                    classifier_loaded = True
-            
-            if not classifier_loaded:
-                msg = f"Warning: Could not load classifier from {resume_classifier_from_dir}"
-                if self.logger:
-                    self.logger.warning(msg)
-                elif self.verbose:
-                    print(msg)
+            resolved_epoch = resolve_checkpoint_epoch(resume_classifier_dir, "latest")
+            validate_checkpoint_files(
+                resume_classifier_dir,
+                [self.domain_classifier],
+                resolved_epoch,
+                require_training_state=False,
+            )
+            metadata_dict = {}
+            load_checkpoint(
+                path=str(resume_classifier_dir),
+                models=[self.domain_classifier],
+                optimizer=None,
+                scheduler=None,
+                scaler=None,
+                epoch=resolved_epoch,
+                metadata_dict=metadata_dict,
+                device=self.device,
+            )
+            msg = f"Loaded classifier from PhysicsNeMo checkpoint: {resume_classifier_dir}"
+            if self.logger:
+                self.logger.info(msg)
+            elif self.verbose:
+                print(msg)
         
         val_loaders = val_loaders or {}
         if "target_val" in val_loaders:
@@ -404,8 +379,12 @@ class DomainAdaptationTrainer:
         elif self.verbose:
             print(msg1)
             print(msg2)
+
+        saved_latest_epoch: Optional[int] = None
+        last_epoch: Optional[int] = None
         
         for epoch in range(start_epoch + 1, adaptation_epochs):
+            last_epoch = epoch
             set_loader_epoch(src_loader, epoch)
             for loader in tgt_loaders:
                 set_loader_epoch(loader, epoch)
@@ -557,7 +536,7 @@ class DomainAdaptationTrainer:
                         metric_name=self.best_metric_name,
                     )
 
-            should_save_latest = save_every is None or epoch % save_every == 0
+            should_save_latest = save_every is not None and epoch % save_every == 0
             if should_save_latest:
                 self._save_checkpoint(
                     save_dir,
@@ -568,6 +547,18 @@ class DomainAdaptationTrainer:
                     is_best=False,
                     metric_name=self.best_metric_name,
                 )
+                saved_latest_epoch = epoch
+
+        if last_epoch is not None and saved_latest_epoch != last_epoch:
+            self._save_checkpoint(
+                save_dir,
+                optimizer,
+                scheduler,
+                last_epoch,
+                save_classifier=True,
+                is_best=False,
+                metric_name=self.best_metric_name,
+            )
 
         msg = "Domain adaptation training completed!"
         if self.logger:
@@ -765,9 +756,7 @@ class DomainAdaptationTrainer:
         scheduler: Any
     ) -> int:
         r"""
-        Resume training from checkpoint using PhysicsNeMo checkpoint system.
-        
-        Supports both PhysicsNeMo format (new) and neuralop format (old) for backward compatibility.
+        Resume training from a PhysicsNeMo checkpoint directory.
 
         Parameters
         ----------
@@ -787,97 +776,34 @@ class DomainAdaptationTrainer:
         
         if not resume_dir.exists():
             msg = f"Resume directory does not exist: {resume_dir}"
-            if self.logger:
-                self.logger.warning(msg)
-            elif self.verbose:
-                print(msg)
-            return -1
+            raise FileNotFoundError(msg)
 
-        try:
-            metadata_dict = {}
+        metadata_dict = {}
+        models_to_load = [self.model]
+        if hasattr(self, 'domain_classifier') and self.domain_classifier is not None:
+            models_to_load.append(self.domain_classifier)
 
-            try:
-                models_to_load = [self.model]
-                if hasattr(self, 'domain_classifier') and self.domain_classifier is not None:
-                    models_to_load.append(self.domain_classifier)
+        resolved_epoch = resolve_checkpoint_epoch(resume_dir, "latest")
+        validate_checkpoint_files(resume_dir, models_to_load, resolved_epoch)
+        load_checkpoint(
+            path=str(resume_dir),
+            models=models_to_load,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            scaler=self.scaler if self.scaler.is_enabled() else None,
+            epoch=resolved_epoch,
+            metadata_dict=metadata_dict,
+            device=self.device,
+        )
+        if self.logger:
+            self.logger.info(f"Loaded checkpoint using PhysicsNeMo format (epoch={resolved_epoch})")
 
-                resolved_epoch = resolve_checkpoint_epoch(resume_dir, "latest")
-                validate_checkpoint_files(resume_dir, models_to_load, resolved_epoch)
-                load_checkpoint(
-                    path=str(resume_dir),
-                    models=models_to_load,
-                    optimizer=optimizer,
-                    scheduler=scheduler,
-                    scaler=self.scaler if self.scaler.is_enabled() else None,
-                    epoch=resolved_epoch,
-                    metadata_dict=metadata_dict,
-                    device=self.device,
-                )
-                if self.logger:
-                    self.logger.info(f"Loaded checkpoint using PhysicsNeMo format (epoch={resolved_epoch})")
-                resume_epoch = resolved_epoch
-            except (FileNotFoundError, KeyError, ValueError) as e:
-                if self.logger:
-                    self.logger.info(f"PhysicsNeMo checkpoint not found, trying neuralop format: {e}")
-
-                save_name = resolve_legacy_neuralop_checkpoint_name(resume_dir, "latest")
-                if save_name is None:
-                    msg = f"No checkpoint found in {resume_dir} (tried both formats)"
-                    if self.logger:
-                        self.logger.warning(msg)
-                    elif self.verbose:
-                        print(msg)
-                    return -1
-
-                from neuralop.training.training_state import load_training_state
-
-                model_for_load = self.model.module if isinstance(self.model, torch.nn.parallel.DistributedDataParallel) else self.model
-                if hasattr(model_for_load, "gino"):
-                    model_for_load = model_for_load.gino
-                    if hasattr(model_for_load, "inner_model"):
-                        model_for_load = model_for_load.inner_model
-
-                _, optimizer, scheduler, _, resume_epoch = load_training_state(
-                    save_dir=resume_dir,
-                    save_name=save_name,
-                    model=model_for_load,
-                    optimizer=optimizer,
-                    scheduler=scheduler,
-                )
-
-                # Try to load domain classifier if it exists
-                classifier_path = resume_dir / "classifier_state_dict.pt"
-                if classifier_path.exists() and hasattr(self, 'domain_classifier') and self.domain_classifier is not None:
-                    classifier_target = (
-                        self.domain_classifier.module
-                        if isinstance(self.domain_classifier, torch.nn.parallel.DistributedDataParallel)
-                        else self.domain_classifier
-                    )
-                    classifier_target.load_state_dict(
-                        torch.load(str(classifier_path), map_location=self.device)
-                    )
-                    if self.logger:
-                        self.logger.info("Loaded domain classifier from neuralop checkpoint")
-
-                if self.logger:
-                    self.logger.info(f"Loaded checkpoint using neuralop format: {save_name}")
-
-            if resume_epoch is not None and resume_epoch >= 0:
-                msg = f"Resumed from epoch {resume_epoch}"
-                if self.logger:
-                    self.logger.info(msg)
-                elif self.verbose:
-                    print(msg)
-                return resume_epoch
-            return -1
-                
-        except Exception as e:
-            msg = f"Error loading checkpoint from {resume_dir}: {e}"
-            if self.logger:
-                self.logger.error(msg)
-            elif self.verbose:
-                print(msg)
-            raise
+        msg = f"Resumed from epoch {resolved_epoch}"
+        if self.logger:
+            self.logger.info(msg)
+        elif self.verbose:
+            print(msg)
+        return resolved_epoch
 
 
 def adapt_model(
@@ -1022,9 +948,9 @@ def adapt_model(
         if not da_cfg:
             raise ValueError("config.training.da_classifier is required for domain adaptation")
         domain_classifier = CNNDomainClassifier(
-            model.fno_hidden_channels,
-            config.training.get("da_lambda_max", 1.0),
-            da_cfg,
+            in_channels=model.fno_hidden_channels,
+            da_cfg=da_cfg,
+            lambda_max=config.training.get("da_lambda_max", 1.0),
         ).to(device)
     except (AttributeError, KeyError) as e:
         raise ValueError(
@@ -1110,8 +1036,7 @@ def adapt_model(
         scheduler=scheduler_adapt,
         training_loss=training_loss_fn,
         # da_class_loss_weight controls adversarial training strength
-        # Default 0.0 disables adversarial training (standard fine-tuning)
-        # Set to positive value (e.g., 0.1) to enable domain adaptation
+        # Set to 0.0 to disable adversarial training and use supervised fine-tuning.
         class_loss_weight=config.training.get("da_class_loss_weight", 0.0),
         adaptation_epochs=config.training.get("n_epochs_adapt", 50),
         save_every=None,  # Save at end only, or set to save interval

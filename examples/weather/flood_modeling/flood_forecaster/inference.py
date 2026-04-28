@@ -41,7 +41,6 @@ from inference.rollout import rollout_prediction
 from utils.normalization import fit_normalizers_from_sample_index
 from utils.checkpointing import (
     resolve_checkpoint_epoch,
-    resolve_legacy_neuralop_checkpoint_name,
     validate_checkpoint_files,
 )
 from utils.runtime import seed_everything, split_dataset
@@ -54,6 +53,44 @@ def log_section(logger: RankZeroLoggingWrapper, title: str, char: str = "=", wid
     logger.info(separator)
     logger.info(title)
     logger.info(separator)
+
+
+def recreate_normalizers_from_source_split(
+    cfg: DictConfig,
+    source_data_root: str,
+    data_io_cfg: DictConfig,
+):
+    r"""Recreate normalizers from the deterministic source training split."""
+    source_full_dataset = FloodDatasetWithQueryPoints(
+        data_root=source_data_root,
+        n_history=cfg.source_data.n_history,
+        xy_file=cfg.source_data.get("xy_file", None),
+        query_res=cfg.source_data.get("query_res", [64, 64]),
+        static_files=cfg.source_data.get("static_files", []),
+        dynamic_patterns=cfg.source_data.get("dynamic_patterns", {}),
+        boundary_patterns=cfg.source_data.get("boundary_patterns", {}),
+        raise_on_smaller=True,
+        skip_before_timestep=cfg.source_data.get("skip_before_timestep", 0),
+        noise_type="none",
+        noise_std=None,
+        backend=getattr(data_io_cfg, "backend", "auto"),
+        cache_dir_name=getattr(data_io_cfg, "cache_dir_name", ".flood_cache"),
+        rebuild_cache=bool(getattr(data_io_cfg, "rebuild_cache", False)),
+        run_cache_size=int(getattr(data_io_cfg, "run_cache_size", 4)),
+    )
+
+    train_sz = int(0.9 * len(source_full_dataset))
+    if train_sz <= 0:
+        raise ValueError(
+            f"Cannot recreate normalizers from empty source split: {source_data_root}"
+        )
+    source_train_subset, _ = split_dataset(
+        source_full_dataset,
+        [train_sz, len(source_full_dataset) - train_sz],
+        seed=cfg.distributed.seed,
+        offset=11,
+    )
+    return fit_normalizers_from_sample_index(source_train_subset)
 
 
 @hydra.main(version_base="1.3", config_path="conf", config_name="config")
@@ -143,13 +180,7 @@ def run_inference(cfg: DictConfig) -> None:
         model = GINOWrapper(gino_model, autoregressive=autoregressive)
         model = model.to(device)
 
-        # Load checkpoint into the model
-        # Support both PhysicsNeMo format (new) and neuralop format (old) for backward compatibility
-        checkpoint_loaded = False
-        resolved_epoch = None
-        
-        # Try PhysicsNeMo format first (new format)
-        # Checkpoints are saved as GINOWrapper (PhysicsNeMo Module), so we load into the wrapper
+        # Load the PhysicsNeMo checkpoint into the instantiated wrapper.
         try:
             resolved_epoch = resolve_checkpoint_epoch(checkpoint_path, inference_epoch_mode)
             validate_checkpoint_files(checkpoint_path, model, resolved_epoch)
@@ -167,45 +198,10 @@ def run_inference(cfg: DictConfig) -> None:
             log_rank_zero.info(
                 f"Loaded checkpoint using PhysicsNeMo format (epoch={resolved_epoch}, mode={inference_epoch_mode})"
             )
-            checkpoint_loaded = True
         except (FileNotFoundError, KeyError, ValueError) as e:
-            # Fall back to neuralop format (old format)
-            log_rank_zero.info(f"PhysicsNeMo checkpoint not found, trying neuralop format: {e}")
-            
-        # Try neuralop format (old format) if PhysicsNeMo format failed
-        # For old format, we need to load into the inner gino_model, not the wrapper
-        if not checkpoint_loaded:
-            try:
-                from neuralop.training.training_state import load_training_state
-                
-                save_name = resolve_legacy_neuralop_checkpoint_name(
-                    checkpoint_path, inference_epoch_mode
-                )
-                if save_name is None:
-                    log_rank_zero.error(f"No checkpoint found in {checkpoint_path}")
-                    log_rank_zero.error("Tried both PhysicsNeMo and neuralop formats")
-                    sys.exit(1)
-
-                # Load checkpoint using neuralop format into the inner model
-                # Extract the inner model from GINOWrapper for loading
-                inner_model = model.gino if hasattr(model, "gino") else gino_model
-                if hasattr(inner_model, "inner_model"):
-                    inner_model = inner_model.inner_model
-                inner_model, _, _, _, _ = load_training_state(
-                    save_dir=checkpoint_path,
-                    save_name=save_name,
-                    model=inner_model,
-                    optimizer=None,
-                    scheduler=None,
-                )
-                log_rank_zero.info(f"Loaded checkpoint using neuralop format: {save_name}")
-                checkpoint_loaded = True
-            except Exception as e:
-                log_rank_zero.error(f"Failed to load checkpoint in both formats: {e}")
-                sys.exit(1)
-        
-        if not checkpoint_loaded:
-            log_rank_zero.error("Failed to load checkpoint in any format")
+            log_rank_zero.error(
+                f"Failed to load PhysicsNeMo checkpoint from {checkpoint_path}: {e}"
+            )
             sys.exit(1)
 
         # Load normalizers from checkpoint if available
@@ -227,35 +223,11 @@ def run_inference(cfg: DictConfig) -> None:
         else:
             # Fallback: recreate normalizers from source data if not saved
             log_rank_zero.info("Normalizers not found in checkpoint or pretrain folder. Recreating from source data...")
-
-            source_full_dataset = FloodDatasetWithQueryPoints(
-                data_root=cfg.source_data.root,
-                n_history=cfg.source_data.n_history,
-                xy_file=cfg.source_data.get("xy_file", None),
-                query_res=cfg.source_data.get("query_res", [64, 64]),
-                static_files=cfg.source_data.get("static_files", []),
-                dynamic_patterns=cfg.source_data.get("dynamic_patterns", {}),
-                boundary_patterns=cfg.source_data.get("boundary_patterns", {}),
-                raise_on_smaller=True,
-                skip_before_timestep=cfg.source_data.get("skip_before_timestep", 0),
-                noise_type="none",
-                noise_std=None,
-                backend=getattr(data_io_cfg, "backend", "auto"),
-                cache_dir_name=getattr(data_io_cfg, "cache_dir_name", ".flood_cache"),
-                rebuild_cache=bool(getattr(data_io_cfg, "rebuild_cache", False)),
-                run_cache_size=int(getattr(data_io_cfg, "run_cache_size", 4)),
+            normalizers = recreate_normalizers_from_source_split(
+                cfg,
+                cfg.source_data.root,
+                data_io_cfg,
             )
-
-            # Use a subset to fit normalizers (faster)
-            train_sz = min(100, int(0.9 * len(source_full_dataset)))  # Use up to 100 samples
-            source_train_subset, _ = split_dataset(
-                source_full_dataset,
-                [train_sz, len(source_full_dataset) - train_sz],
-                seed=cfg.distributed.seed,
-                offset=101,
-            )
-
-            normalizers = fit_normalizers_from_sample_index(source_train_subset)
             log_rank_zero.info("Normalizers recreated from source data")
 
         # Create data processor
@@ -279,6 +251,7 @@ def run_inference(cfg: DictConfig) -> None:
             boundary_patterns=cfg.rollout_data.get("boundary_patterns", {}),
             raise_on_smaller=True,
             skip_before_timestep=cfg.source_data.get("skip_before_timestep", 0),
+            list_file_name=cfg.rollout_data.get("list_file_name", "test.txt"),
             backend=getattr(data_io_cfg, "backend", "auto"),
             cache_dir_name=getattr(data_io_cfg, "cache_dir_name", ".flood_cache"),
             rebuild_cache=bool(getattr(data_io_cfg, "rebuild_cache", False)),

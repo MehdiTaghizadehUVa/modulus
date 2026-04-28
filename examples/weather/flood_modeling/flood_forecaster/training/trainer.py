@@ -53,7 +53,6 @@ from physicsnemo.launch.logging import PythonLogger, RankZeroLoggingWrapper
 from physicsnemo.utils.checkpoint import load_checkpoint, save_checkpoint
 from utils.checkpointing import (
     resolve_checkpoint_epoch,
-    resolve_legacy_neuralop_checkpoint_name,
     validate_checkpoint_files,
     write_best_checkpoint_metadata,
 )
@@ -384,7 +383,7 @@ class NeuralOperatorTrainer:
         save_best : str, optional
             Metric name (format: ``{loader_name}_{loss_name}``) to monitor
             for best model saving. When this metric improves, a checkpoint is saved.
-            Overrides save_every when set. Default is None.
+            Can be used together with save_every. Default is None.
         save_dir : str or Path, optional
             Directory to save training checkpoints. Default is "./checkpoints".
         resume_from_dir : str or Path, optional
@@ -471,8 +470,6 @@ class NeuralOperatorTrainer:
                     f"Available metrics: {available_metrics}"
                 )
             self.best_metric_value = float("inf")
-            # Best model saving overrides interval saving
-            self.save_every = None
 
         # Log training setup
         if self.verbose:
@@ -494,9 +491,13 @@ class NeuralOperatorTrainer:
         epoch_range = range(self.start_epoch, self.n_epochs)
         if is_rank_zero and self.verbose:
             epoch_range = tqdm(epoch_range, desc="Training", unit="epoch")
+
+        saved_latest_epoch: Optional[int] = None
+        last_epoch: Optional[int] = None
         
         for epoch in epoch_range:
             self.epoch = epoch
+            last_epoch = epoch
             set_loader_epoch(train_loader, epoch)
             for loader in test_loaders.values():
                 set_loader_epoch(loader, epoch)
@@ -521,9 +522,13 @@ class NeuralOperatorTrainer:
                     self.best_metric_value = eval_metrics[save_best]
                     self._save_checkpoint(save_dir, is_best=True)
 
-            should_save_latest = self.save_every is None or epoch % self.save_every == 0
+            should_save_latest = self.save_every is not None and epoch % self.save_every == 0
             if should_save_latest:
                 self._save_checkpoint(save_dir, is_best=False)
+                saved_latest_epoch = epoch
+
+        if last_epoch is not None and saved_latest_epoch != last_epoch:
+            self._save_checkpoint(save_dir, is_best=False)
 
         return epoch_metrics
 
@@ -1142,44 +1147,19 @@ class NeuralOperatorTrainer:
             raise FileNotFoundError(f"Checkpoint directory not found: {resume_dir}")
 
         metadata_dict = {}
-        resume_epoch = None
-        try:
-            resolved_epoch = resolve_checkpoint_epoch(resume_dir, "latest")
-            validate_checkpoint_files(resume_dir, self.model, resolved_epoch)
-            load_checkpoint(
-                path=str(resume_dir),
-                models=self.model,
-                optimizer=self.optimizer,
-                scheduler=self.scheduler,
-                scaler=self.scaler,
-                epoch=resolved_epoch,
-                metadata_dict=metadata_dict,
-                device=self.device,
-            )
-            resume_epoch = resolved_epoch
-        except (FileNotFoundError, ValueError) as physicsnemo_error:
-            save_name = resolve_legacy_neuralop_checkpoint_name(resume_dir, "latest")
-            if save_name is None:
-                raise FileNotFoundError(
-                    f"Could not resume from {resume_dir}: {physicsnemo_error}"
-                ) from physicsnemo_error
-
-            from neuralop.training.training_state import load_training_state
-
-            model_for_load = self.model.module if isinstance(self.model, DDP) else self.model
-            if hasattr(model_for_load, "gino"):
-                model_for_load = model_for_load.gino
-                if hasattr(model_for_load, "inner_model"):
-                    model_for_load = model_for_load.inner_model
-
-            _, self.optimizer, self.scheduler, _, legacy_epoch = load_training_state(
-                save_dir=resume_dir,
-                save_name=save_name,
-                model=model_for_load,
-                optimizer=self.optimizer,
-                scheduler=self.scheduler,
-            )
-            resume_epoch = legacy_epoch
+        resolved_epoch = resolve_checkpoint_epoch(resume_dir, "latest")
+        validate_checkpoint_files(resume_dir, self.model, resolved_epoch)
+        load_checkpoint(
+            path=str(resume_dir),
+            models=self.model,
+            optimizer=self.optimizer,
+            scheduler=self.scheduler,
+            scaler=self.scaler,
+            epoch=resolved_epoch,
+            metadata_dict=metadata_dict,
+            device=self.device,
+        )
+        resume_epoch = resolved_epoch
 
         # Update training state
         if resume_epoch is not None and resume_epoch > self.start_epoch:

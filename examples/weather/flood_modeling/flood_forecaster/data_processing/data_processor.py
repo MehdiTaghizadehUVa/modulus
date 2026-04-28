@@ -141,6 +141,25 @@ class FloodGINODataProcessor(physicsnemo.Module):
         self.target_norm = target_norm
         self.inverse_test = inverse_test
 
+    @staticmethod
+    def _validate_shared_batched_tensor(
+        tensor: torch.Tensor,
+        *,
+        name: str,
+        batched_rank: int,
+    ) -> None:
+        """Ensure batched shared tensors are exact copies before using item zero."""
+        if tensor.ndim != batched_rank or tensor.shape[0] <= 1:
+            return
+        reference = tensor[0]
+        for batch_index in range(1, tensor.shape[0]):
+            if not torch.equal(tensor[batch_index], reference):
+                raise ValueError(
+                    f"{name} is batched with non-identical entries. FloodForecaster "
+                    "training assumes shared geometry/query tensors within a batch; "
+                    "use batch_size=1 or a variable-geometry processor path."
+                )
+
     def preprocess(
         self, sample: RawFloodSample, batched: bool = True
     ) -> ProcessedGINOBatch:
@@ -174,6 +193,18 @@ class FloodGINODataProcessor(physicsnemo.Module):
                         f"Expected {key} to be at least 2D tensor, got {value.ndim}D "
                         f"with shape {tuple(value.shape)}"
                     )
+            if isinstance(sample["geometry"], torch.Tensor):
+                self._validate_shared_batched_tensor(
+                    sample["geometry"],
+                    name="geometry",
+                    batched_rank=3,
+                )
+            if isinstance(sample["query_points"], torch.Tensor):
+                self._validate_shared_batched_tensor(
+                    sample["query_points"],
+                    name="query_points",
+                    batched_rank=4,
+                )
 
         del batched  # kept for API compatibility with upstream trainer hooks
 

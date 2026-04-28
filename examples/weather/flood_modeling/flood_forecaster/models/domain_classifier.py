@@ -193,8 +193,19 @@ class CNNDomainClassifier(physicsnemo.Module):
         self.in_channels = in_channels
         self.da_cfg = _sanitize_args_for_json(da_cfg)
         self.conv_layers_cfg = _sanitize_args_for_json(conv_layers)
-        self.fc_dim = fc_dim
-        self.lambda_max = lambda_max
+        self.fc_dim = int(fc_dim)
+        self.lambda_max = float(lambda_max)
+
+        # physicsnemo.Module captures raw __init__ arguments in __new__, before
+        # this constructor can normalize DictConfig inputs. Keep the checkpoint
+        # args aligned with the sanitized runtime attributes so .mdlus saves stay
+        # JSON-serializable when callers pass Hydra configs.
+        checkpoint_args = self._args["__args__"]
+        checkpoint_args["da_cfg"] = self.da_cfg
+        checkpoint_args["conv_layers"] = self.conv_layers_cfg
+        checkpoint_args["fc_dim"] = self.fc_dim
+        checkpoint_args["lambda_max"] = self.lambda_max
+        checkpoint_args["meta"] = None
 
         layers = []
         current_channels = in_channels

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Sequence, Union
 
 import torch
 
@@ -175,27 +175,3 @@ def write_best_checkpoint_metadata(
     with sidecar_path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, sort_keys=True)
     return sidecar_path
-
-
-def resolve_legacy_neuralop_checkpoint_name(
-    path: Union[str, Path],
-    mode: Union[str, int, None],
-) -> Optional[str]:
-    """Resolve the legacy neuralop checkpoint basename when present."""
-    checkpoint_dir = Path(path)
-    if isinstance(mode, int) or (isinstance(mode, str) and mode.isdigit()):
-        return None
-
-    mode = "latest" if mode is None else str(mode).lower()
-    candidates: List[str]
-    if mode == "best":
-        candidates = ["best_model", "model"]
-    elif mode == "latest":
-        candidates = ["model", "best_model"]
-    else:
-        raise ValueError(f"Unsupported legacy checkpoint resolution mode: {mode}")
-
-    for candidate in candidates:
-        if (checkpoint_dir / f"{candidate}_state_dict.pt").exists():
-            return candidate
-    return None

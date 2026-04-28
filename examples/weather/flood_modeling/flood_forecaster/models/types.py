@@ -11,6 +11,7 @@ BatchedGeometryTensor = Float[torch.Tensor, "one points coord"]
 QueryGridTensor = Float[torch.Tensor, "height width coord"]
 BatchedQueryGridTensor = Float[torch.Tensor, "one height width coord"]
 FeatureTensor = Float[torch.Tensor, "batch points channels"]
+LatentFeatureGridTensor = Float[torch.Tensor, "batch channels height width"]
 ModelOutputTensor = Float[torch.Tensor, "batch points channels"]
 ClassifierInputTensor = Float[torch.Tensor, "batch channels height width"]
 ClassifierOutputTensor = Float[torch.Tensor, "batch logits"]
@@ -22,7 +23,7 @@ OutputQueryContainer = Union[OutputQueryTensor, Dict[str, OutputQueryTensor]]
 ModelOutputContainer = Union[ModelOutputTensor, Dict[str, ModelOutputTensor]]
 GINOForwardReturn = Union[
     ModelOutputContainer,
-    tuple[ModelOutputContainer, AnyFloatTensor],
+    tuple[ModelOutputContainer, LatentFeatureGridTensor],
 ]
 
 

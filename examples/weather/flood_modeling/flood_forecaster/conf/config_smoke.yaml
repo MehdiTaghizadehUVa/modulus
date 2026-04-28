@@ -9,10 +9,15 @@ hydra:
 source_data:
   root: "${hydra:runtime.cwd}/smoke_data/source"
   batch_size: 2
+  rollout_length: 4
 
 target_data:
   root: "${hydra:runtime.cwd}/smoke_data/target"
   batch_size: 2
+
+rollout_data:
+  root: "${hydra:runtime.cwd}/smoke_data/target"
+  list_file_name: "train.txt"
 
 checkpoint:
   save_dir: "${hydra:runtime.cwd}/checkpoints_flood_forecaster_smoke"

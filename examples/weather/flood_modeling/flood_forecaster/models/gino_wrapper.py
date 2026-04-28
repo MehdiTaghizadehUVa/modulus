@@ -278,14 +278,16 @@ class GINOWrapper(physicsnemo.Module, register=True):
     ada_in : torch.Tensor, optional
         Optional domain-adaptation conditioning tensor forwarded to the latent embedding block.
     return_features : bool, optional, default=False
-        If ``True``, return both decoded outputs and the latent feature tensor.
+        If ``True``, return both decoded outputs and the channel-first latent
+        feature grid used by the domain-adaptation classifier.
 
     Outputs
     -------
     torch.Tensor or Dict[str, torch.Tensor] or tuple
         Decoded output tensor of shape :math:`(B, N_{q}, C_{out})`, a matching
         ``dict[str, torch.Tensor]`` when query groups are provided, or a tuple of
-        ``(outputs, latent_features)`` when ``return_features=True``.
+        ``(outputs, latent_feature_grid)`` when ``return_features=True``. The
+        feature grid has shape :math:`(B, C_{hidden}, H, W)`.
     """
 
     def __init__(
@@ -418,7 +420,8 @@ class GINOWrapper(physicsnemo.Module, register=True):
         ada_in : AnyFloatTensor, optional, default=None
             Optional adaptation-conditioning tensor.
         return_features : bool, optional, default=False
-            If ``True``, return the latent tensor alongside decoded outputs.
+            If ``True``, return the 4D channel-first latent feature grid alongside
+            decoded outputs.
 
         Returns
         -------
@@ -447,6 +450,7 @@ class GINOWrapper(physicsnemo.Module, register=True):
 
         batch_size = x.shape[0] if x is not None else latent_features.shape[0]
         latent_points = latent_queries.reshape(-1, latent_queries.shape[-1])
+        using_precomputed_latent = latent_features is not None
 
         if latent_features is None:
             in_p = gino_model.gno_in(
@@ -455,15 +459,53 @@ class GINOWrapper(physicsnemo.Module, register=True):
                 f_y=x,
             )
             in_p = in_p.reshape((batch_size, *latent_queries.shape[:-1], -1))
-            latent_embed = gino_model.latent_embedding(in_p=in_p, ada_in=ada_in)
+            latent_feature_grid = gino_model.latent_embedding(in_p=in_p, ada_in=ada_in)
         else:
-            latent_embed = latent_features
+            latent_feature_grid = latent_features
 
-        latent_embed = latent_embed.permute(
+        if latent_feature_grid.ndim == 3:
+            expected_points = 1
+            for dim in latent_queries.shape[:-1]:
+                expected_points *= int(dim)
+            if (
+                latent_feature_grid.shape[1] != expected_points
+                or latent_feature_grid.shape[2] != gino_model.fno_hidden_channels
+            ):
+                raise ValueError(
+                    "Flattened latent_features must have shape "
+                    f"(B, {expected_points}, {gino_model.fno_hidden_channels}), "
+                    f"got {tuple(latent_feature_grid.shape)}"
+                )
+            latent_feature_grid = latent_feature_grid.reshape(
+                batch_size,
+                *latent_queries.shape[:-1],
+                gino_model.fno_hidden_channels,
+            ).permute(0, 3, 1, 2).contiguous()
+        elif latent_feature_grid.ndim == 4:
+            expected_spatial_shape = tuple(int(dim) for dim in latent_queries.shape[:-1])
+            has_unexpected_grid_shape = (
+                latent_feature_grid.shape[0] != batch_size
+                or latent_feature_grid.shape[1] != gino_model.fno_hidden_channels
+                or tuple(latent_feature_grid.shape[2:]) != expected_spatial_shape
+            )
+            if (using_precomputed_latent or return_features) and has_unexpected_grid_shape:
+                raise ValueError(
+                    "4D latent_features must have shape "
+                    f"(B, {gino_model.fno_hidden_channels}, *{expected_spatial_shape}), "
+                    f"got {tuple(latent_feature_grid.shape)}"
+                )
+        else:
+            raise ValueError(
+                "latent_features must be a 4D feature grid (B, C, H, W) or a "
+                f"flattened 3D tensor (B, H*W, C), got shape {tuple(latent_feature_grid.shape)}"
+            )
+
+        if getattr(gino_model, "out_gno_tanh", None) in ["latent_embed", "both"]:
+            latent_feature_grid = torch.tanh(latent_feature_grid)
+
+        latent_embed = latent_feature_grid.permute(
             0, *gino_model.in_coord_dim_reverse_order, 1
         ).reshape(batch_size, -1, gino_model.fno_hidden_channels)
-        if getattr(gino_model, "out_gno_tanh", None) in ["latent_embed", "both"]:
-            latent_embed = torch.tanh(latent_embed)
 
         gno_out_forward = getattr(gino_model.gno_out, "forward", gino_model.gno_out)
         gno_out_parameters = inspect.signature(gno_out_forward).parameters
@@ -499,7 +541,7 @@ class GINOWrapper(physicsnemo.Module, register=True):
             outputs = _decode_queries(output_queries)
 
         if return_features:
-            return outputs, latent_embed
+            return outputs, latent_feature_grid
         return outputs
 
     @property
