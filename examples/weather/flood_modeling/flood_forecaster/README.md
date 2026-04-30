@@ -211,6 +211,24 @@ Rollout semantics are:
 - the boundary window is advanced with the next ground-truth boundary value from the dataset, so inflow forcing is teacher-forced rather than predicted
 - metrics and plots are reported after inverse normalization in physical units
 
+### Example Rollout Animations
+
+The following reference animations show the rollout visualization produced by `inference.py`. Each animation compares ground-truth and predicted water depth/velocity fields over time.
+
+**Source domain rollout**
+
+<p align="center">
+  <img src="../../../../docs/img/floodforecaster_source_domain.gif" alt="FloodForecaster source-domain rollout animation" width="80%" />
+</p>
+
+**Target domain rollout**
+
+<p align="center">
+  <img src="../../../../docs/img/floodforecaster_target_domain.gif" alt="FloodForecaster target-domain rollout animation" width="80%" />
+</p>
+
+These GIFs are committed reference assets under `docs/img/`. New inference runs write per-hydrograph rollout animations and companion plots under the configured `rollout.out_dir`.
+
 ## Dataset Loading and Normalization
 
 The dataset stack lives under `datasets/`:
