@@ -26,6 +26,7 @@ For rollout evaluation and visualization, use inference.py instead.
 
 import os
 import sys
+from collections.abc import Mapping
 from typing import Any, Dict, Optional
 
 import hydra
@@ -41,6 +42,62 @@ from physicsnemo.launch.logging import PythonLogger, RankZeroLoggingWrapper
 from training.pretraining import pretrain_model
 from training.domain_adaptation import adapt_model
 from utils.runtime import seed_everything
+
+
+def _config_path_exists(cfg: DictConfig, path: str) -> bool:
+    node: Any = cfg
+    for part in path.split("."):
+        if not isinstance(node, (DictConfig, dict)) or part not in node:
+            return False
+        node = node[part]
+    return True
+
+
+def apply_wandb_sweep_overrides(
+    cfg: DictConfig,
+    sweep_values: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Apply validated W&B sweep values to their real Hydra config fields.
+
+    Sweep parameters may use dotted config paths directly or short names listed
+    in ``wandb.sweep_parameter_map``. Top-level values already supplied to W&B
+    for run logging are ignored; they are not sweep overrides.
+    """
+    raw_mapping = cfg.wandb.get("sweep_parameter_map", {})
+    parameter_map = OmegaConf.to_container(raw_mapping, resolve=True) or {}
+    applied: Dict[str, Any] = {}
+
+    for parameter_name, value in sweep_values.items():
+        targets = parameter_map.get(parameter_name)
+        if targets is None and "." in parameter_name:
+            targets = parameter_name
+        elif targets is None and parameter_name in cfg:
+            continue
+        elif targets is None:
+            raise ValueError(
+                f"W&B sweep parameter '{parameter_name}' is not mapped to a config field. "
+                "Use a dotted key such as 'training.learning_rate' or add it to "
+                "wandb.sweep_parameter_map."
+            )
+
+        if isinstance(targets, str):
+            targets = [targets]
+        if not isinstance(targets, list) or not targets:
+            raise ValueError(
+                f"W&B sweep mapping for '{parameter_name}' must be a config path "
+                "or a non-empty list of config paths."
+            )
+
+        for target in targets:
+            if not isinstance(target, str) or not _config_path_exists(cfg, target):
+                raise ValueError(
+                    f"W&B sweep parameter '{parameter_name}' maps to unknown config "
+                    f"path '{target}'."
+                )
+            OmegaConf.update(cfg, target, value, merge=False)
+            applied[target] = value
+
+    return applied
 
 
 def _register_hydra_resolvers() -> None:
@@ -308,9 +365,13 @@ def train_flood_forecaster(cfg: DictConfig) -> None:
             )
             wandb.init(**wandb_init_args)
             if cfg.wandb.sweep:
-                for key in wandb.config.keys():
-                    if hasattr(cfg, "params"):
-                        cfg.params[key] = wandb.config[key]
+                applied_sweep_values = apply_wandb_sweep_overrides(
+                    cfg,
+                    dict(wandb.config),
+                )
+                log_rank_zero.info(
+                    f"Applied W&B sweep overrides: {applied_sweep_values}"
+                )
             log_rank_zero.info(f"W&B initialized: project={cfg.wandb.project}, name={wandb_name}")
 
         # Stage 1: Pretraining on source domain

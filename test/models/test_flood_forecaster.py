@@ -127,6 +127,9 @@ domain_adaptation_module = _load_example_module(
 inference_script_module = _load_example_module(
     "flood_forecaster_inference_script", EXAMPLE_ROOT / "inference.py"
 )
+train_script_module = _load_example_module(
+    "flood_forecaster_train_script", EXAMPLE_ROOT / "train.py"
+)
 training_init = _load_example_module("training", EXAMPLE_ROOT / "training" / "__init__.py")
 sys.modules["training"].__dict__.update(training_init.__dict__)
 
@@ -173,6 +176,52 @@ runtime_module = sys.modules["utils.runtime"]
 _DEVICES = ["cpu"]
 if torch.cuda.is_available():
     _DEVICES.append("cuda:0")
+
+
+def test_wandb_sweep_overrides_update_real_config_paths():
+    """Mapped short names and dotted keys should update the training config."""
+    cfg = OmegaConf.create(
+        {
+            "training": {"learning_rate": 1e-4, "weight_decay": 1e-4},
+            "source_data": {"batch_size": 1},
+            "target_data": {"batch_size": 1},
+            "wandb": {
+                "sweep_parameter_map": {
+                    "learning_rate": "training.learning_rate",
+                    "batch_size": ["source_data.batch_size", "target_data.batch_size"],
+                }
+            },
+        }
+    )
+
+    applied = train_script_module.apply_wandb_sweep_overrides(
+        cfg,
+        {
+            "learning_rate": 5e-4,
+            "batch_size": 4,
+            "training.weight_decay": 2e-5,
+            "training": {"learning_rate": 1e-4},
+        },
+    )
+
+    assert cfg.training.learning_rate == pytest.approx(5e-4)
+    assert cfg.training.weight_decay == pytest.approx(2e-5)
+    assert cfg.source_data.batch_size == 4
+    assert cfg.target_data.batch_size == 4
+    assert set(applied) == {
+        "training.learning_rate",
+        "training.weight_decay",
+        "source_data.batch_size",
+        "target_data.batch_size",
+    }
+
+
+def test_wandb_sweep_overrides_reject_unknown_parameter():
+    """A typo in a sweep must fail rather than run the base configuration."""
+    cfg = OmegaConf.create({"training": {"learning_rate": 1e-4}, "wandb": {"sweep_parameter_map": {}}})
+
+    with pytest.raises(ValueError, match="not mapped"):
+        train_script_module.apply_wandb_sweep_overrides(cfg, {"lr": 5e-4})
 
 FIXTURE_DIR = EXAMPLE_ROOT / "tests" / "data"
 STATIC_FILES = [

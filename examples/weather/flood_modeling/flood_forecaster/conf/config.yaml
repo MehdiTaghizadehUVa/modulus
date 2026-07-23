@@ -238,6 +238,15 @@ wandb:
   project: 'Flood_GINO_NoPhysics'  # W&B project name (string)
   entity: 'uva_mehdi'  # W&B entity/username (string)
   sweep: false  # Enable W&B hyperparameter sweep mode (boolean: true/false)
+  sweep_parameter_map:  # Short sweep names; dotted config paths also work directly
+    learning_rate: training.learning_rate
+    weight_decay: training.weight_decay
+    batch_size: [source_data.batch_size, target_data.batch_size]
+    fno_hidden_channels: model.fno_hidden_channels
+    fno_n_layers: model.fno_n_layers
+    in_gno_radius: model.in_gno_radius
+    out_gno_radius: model.out_gno_radius
+    da_class_loss_weight: training.da_class_loss_weight
   log_output: true  # Log model outputs to W&B (boolean: true/false)
   eval_interval: ${training.eval_interval}  # Compatibility alias for validation cadence
 
