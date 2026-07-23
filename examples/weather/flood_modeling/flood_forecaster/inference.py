@@ -96,6 +96,15 @@ def recreate_normalizers_from_source_split(
     return fit_normalizers_from_sample_index(source_train_subset)
 
 
+def validate_inference_world_size(world_size: int) -> None:
+    """Reject distributed inference until output sharding is implemented."""
+    if int(world_size) > 1:
+        raise RuntimeError(
+            "FloodForecaster inference currently supports one process only. "
+            "Launch inference without torchrun; distributed output sharding is not implemented."
+        )
+
+
 @hydra.main(version_base="1.3", config_path="conf", config_name="config")
 def run_inference(cfg: DictConfig) -> None:
     r"""
@@ -124,6 +133,7 @@ def run_inference(cfg: DictConfig) -> None:
     # Initialize logging
     log = PythonLogger(name="flood_forecaster_inference")
     log_rank_zero = RankZeroLoggingWrapper(log, dist)
+    validate_inference_world_size(dist.world_size)
 
     log_section(log_rank_zero, "FLOOD FORECASTER - Inference and Evaluation")
 

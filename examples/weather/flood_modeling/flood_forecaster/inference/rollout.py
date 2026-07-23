@@ -66,6 +66,29 @@ def compute_csi(threshold, pred, gt):
     return TP / (TP + FP + FN) if (TP + FP + FN) > 0 else 1.0
 
 
+def _rollout_fields_to_numpy(predictions, ground_truth):
+    """Transfer prediction and target rollout fields to CPU in one operation."""
+    fields = torch.stack([torch.stack(predictions, dim=0), ground_truth], dim=0)
+    return fields.detach().cpu().numpy()
+
+
+def _compute_timestep_metrics(prediction, ground_truth):
+    """Compute per-timestep metrics after a rollout has reached CPU."""
+    wd_pred, vx_pred, vy_pred = [prediction[..., channel] for channel in range(3)]
+    wd_gt, vx_gt, vy_gt = [ground_truth[..., channel] for channel in range(3)]
+    return {
+        "rmse_wd": np.sqrt(np.mean((wd_pred - wd_gt) ** 2, axis=1)),
+        "csi_005": np.asarray(
+            [compute_csi(0.05, pred, target) for pred, target in zip(wd_pred, wd_gt)]
+        ),
+        "csi_03": np.asarray(
+            [compute_csi(0.3, pred, target) for pred, target in zip(wd_pred, wd_gt)]
+        ),
+        "rmse_vx": np.sqrt(np.mean((vx_pred - vx_gt) ** 2, axis=1)),
+        "rmse_vy": np.sqrt(np.mean((vy_pred - vy_gt) ** 2, axis=1)),
+    }
+
+
 def rollout_prediction(
     model,
     rollout_dataset,
@@ -171,67 +194,61 @@ def rollout_prediction(
         gt_rollout = full_dynamic[start_pred_t:end_pred_t]
         gt_boundary_rollout = full_boundary[start_pred_t:end_pred_t]
 
-        wd_pred_list, wd_gt_list = [], []
-        vx_pred_list, vy_pred_list = [], []
-        vx_gt_list, vy_gt_list = [], []
-        run_ts_metrics = {'rmse_wd': [], 'csi_005': [], 'csi_03': [], 'rmse_vx': [], 'rmse_vy': []}
+        inverse_predictions = []
+        inverse_ground_truth = dynamic_norm.inverse_transform(gt_rollout)
 
         # Record start time for the rollout
-        start_time = time.time()
+        if torch.device(device).type == "cuda":
+            torch.cuda.synchronize(device)
+        start_time = time.perf_counter()
 
         current_dynamic = full_dynamic[skip_before_timestep:start_pred_t].clone()
         current_boundary = full_boundary[skip_before_timestep:start_pred_t].clone()
+        input_geometry = geometry_device.unsqueeze(0)
+        latent_queries = query_points.unsqueeze(0)
+        static_batch = static.unsqueeze(0)
 
-        for t in range(rollout_length):
-            # Prepare input tensors
-            dyn_flat = current_dynamic.permute(1, 0, 2).reshape(1, current_dynamic.shape[1], -1)
-            bc_flat = current_boundary.unsqueeze(0).unsqueeze(2).expand(-1, -1, num_cells, -1)
-            bc_flat = bc_flat.permute(0, 2, 1, 3).reshape(1, num_cells, -1)
-            x = torch.cat([static.unsqueeze(0), bc_flat, dyn_flat], dim=2)
+        with torch.inference_mode():
+            for t in range(rollout_length):
+                dyn_flat = current_dynamic.permute(1, 0, 2).reshape(
+                    1, current_dynamic.shape[1], -1
+                )
+                bc_flat = current_boundary.unsqueeze(0).unsqueeze(2).expand(
+                    -1, -1, num_cells, -1
+                )
+                bc_flat = bc_flat.permute(0, 2, 1, 3).reshape(1, num_cells, -1)
+                x = torch.cat([static_batch, bc_flat, dyn_flat], dim=2)
 
-            with torch.no_grad():
                 # Call model with GINO signature
                 pred = model(
-                    input_geom=geometry_device.unsqueeze(0),
-                    latent_queries=query_points.unsqueeze(0),
-                    output_queries=geometry_device.unsqueeze(0),
-                    x=x
+                    input_geom=input_geometry,
+                    latent_queries=latent_queries,
+                    output_queries=input_geometry,
+                    x=x,
                 )
 
-            # Inverse transform predictions and ground truth
-            inv_pred = target_norm.inverse_transform(pred)
-            inv_gt = dynamic_norm.inverse_transform(gt_rollout[t].unsqueeze(0))
-            
-            # Extract water depth and velocity components
-            wd_pred, vx_pred, vy_pred = [ch.cpu().numpy() for ch in inv_pred[0].T]
-            wd_gt, vx_gt, vy_gt = [ch.cpu().numpy() for ch in inv_gt[0].T]
+                inverse_predictions.append(target_norm.inverse_transform(pred).squeeze(0))
 
-            wd_pred_list.append(wd_pred)
-            wd_gt_list.append(wd_gt)
-            vx_pred_list.append(vx_pred)
-            vx_gt_list.append(vx_gt)
-            vy_pred_list.append(vy_pred)
-            vy_gt_list.append(vy_gt)
+                # Roll out in normalized state space.
+                current_dynamic = torch.cat(
+                    [current_dynamic[1:], pred.squeeze(0).unsqueeze(0)], dim=0
+                )
+                current_boundary = torch.cat(
+                    [current_boundary[1:], gt_boundary_rollout[t].unsqueeze(0)], dim=0
+                )
 
-            # Time-step metrics
-            run_ts_metrics['rmse_wd'].append(np.sqrt(np.mean((wd_pred - wd_gt) ** 2)))
-            run_ts_metrics['csi_005'].append(compute_csi(0.05, wd_pred, wd_gt))
-            run_ts_metrics['csi_03'].append(compute_csi(0.3, wd_pred, wd_gt))
-            run_ts_metrics['rmse_vx'].append(np.sqrt(np.mean((vx_pred - vx_gt) ** 2)))
-            run_ts_metrics['rmse_vy'].append(np.sqrt(np.mean((vy_pred - vy_gt) ** 2)))
-
-            # Update current dynamic state with prediction
-            current_dynamic = torch.cat([current_dynamic[1:], pred.squeeze(0).unsqueeze(0)], dim=0)
-            current_boundary = torch.cat([current_boundary[1:], gt_boundary_rollout[t].unsqueeze(0)], dim=0)
-
-        # Record end time and append the duration
-        end_time = time.time()
+        if torch.device(device).type == "cuda":
+            torch.cuda.synchronize(device)
+        end_time = time.perf_counter()
         rollout_inference_times.append(end_time - start_time)
 
-        # Convert lists to numpy arrays for this run
-        wd_pred_arr, wd_gt_arr = np.stack(wd_pred_list), np.stack(wd_gt_list)
-        vx_pred_arr, vy_pred_arr = np.stack(vx_pred_list), np.stack(vy_pred_list)
-        vx_gt_arr, vy_gt_arr = np.stack(vx_gt_list), np.stack(vy_gt_list)
+        # Predictions and targets remain on the accelerator throughout rollout.
+        prediction, ground_truth = _rollout_fields_to_numpy(
+            inverse_predictions, inverse_ground_truth
+        )
+        wd_pred_arr, vx_pred_arr, vy_pred_arr = [prediction[..., channel] for channel in range(3)]
+        wd_gt_arr, vx_gt_arr, vy_gt_arr = [ground_truth[..., channel] for channel in range(3)]
+        run_ts_metrics = _compute_timestep_metrics(prediction, ground_truth)
 
         # Store the overall error for this event
         avg_rmse_for_run = np.mean(run_ts_metrics['rmse_wd'])
@@ -239,7 +256,7 @@ def rollout_prediction(
 
         # Append run-averaged metrics to aggregated lists
         for key in ['rmse_wd', 'csi_005', 'csi_03', 'rmse_vx', 'rmse_vy']:
-            aggregated_metrics[key].append(np.array(run_ts_metrics[key]))
+            aggregated_metrics[key].append(run_ts_metrics[key])
 
         figures_path = os.path.join(out_dir, "figures_final")
         os.makedirs(figures_path, exist_ok=True)

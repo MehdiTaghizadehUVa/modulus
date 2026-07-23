@@ -29,6 +29,7 @@ from unittest.mock import MagicMock
 
 from neuralop import get_model
 from neuralop.losses import LpLoss
+import numpy as np
 from omegaconf import OmegaConf
 import physicsnemo
 import pytest
@@ -127,6 +128,9 @@ domain_adaptation_module = _load_example_module(
 inference_script_module = _load_example_module(
     "flood_forecaster_inference_script", EXAMPLE_ROOT / "inference.py"
 )
+rollout_module = _load_example_module(
+    "flood_forecaster_rollout", EXAMPLE_ROOT / "inference" / "rollout.py"
+)
 train_script_module = _load_example_module(
     "flood_forecaster_train_script", EXAMPLE_ROOT / "train.py"
 )
@@ -222,6 +226,30 @@ def test_wandb_sweep_overrides_reject_unknown_parameter():
 
     with pytest.raises(ValueError, match="not mapped"):
         train_script_module.apply_wandb_sweep_overrides(cfg, {"lr": 5e-4})
+
+
+def test_inference_rejects_multiple_processes():
+    """Inference must fail before multiple ranks write the same output files."""
+    inference_script_module.validate_inference_world_size(1)
+    with pytest.raises(RuntimeError, match="one process only"):
+        inference_script_module.validate_inference_world_size(2)
+
+
+def test_rollout_fields_transfer_and_metrics_are_run_level():
+    """Rollout predictions and targets should be stacked before CPU metrics."""
+    predictions = [
+        torch.tensor([[0.0, 1.0, 2.0], [0.1, 1.1, 2.1]]),
+        torch.tensor([[0.2, 1.2, 2.2], [0.3, 1.3, 2.3]]),
+    ]
+    ground_truth = torch.stack(predictions) + 0.1
+
+    fields = rollout_module._rollout_fields_to_numpy(predictions, ground_truth)
+    metrics = rollout_module._compute_timestep_metrics(fields[0], fields[1])
+
+    assert fields.shape == (2, 2, 2, 3)
+    assert set(metrics) == {"rmse_wd", "csi_005", "csi_03", "rmse_vx", "rmse_vy"}
+    assert all(values.shape == (2,) for values in metrics.values())
+    np.testing.assert_allclose(metrics["rmse_wd"], [0.1, 0.1], atol=1e-6)
 
 FIXTURE_DIR = EXAMPLE_ROOT / "tests" / "data"
 STATIC_FILES = [
