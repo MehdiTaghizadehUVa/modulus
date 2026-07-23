@@ -40,7 +40,7 @@ from utils.runtime import (
     create_loader_from_config,
     resolve_amp_autocast_enabled,
     resolve_eval_interval,
-    split_dataset,
+    split_dataset_by_run,
 )
 from training.trainer import NeuralOperatorTrainer
 
@@ -144,6 +144,20 @@ def pretrain_model(config, device, is_logger, source_data_config, logger=None):
 
     logger.info("Starting pretraining on source domain...")
     data_io_cfg = getattr(config, "data_io", {})
+    run_cache_size = int(getattr(data_io_cfg, "run_cache_size", 4))
+    run_aware_sampling = bool(getattr(data_io_cfg, "run_aware_sampling", True))
+    configured_pool_size = getattr(data_io_cfg, "active_run_pool_size", None)
+    active_run_pool_size = (
+        max(1, run_cache_size)
+        if configured_pool_size is None
+        else int(configured_pool_size)
+    )
+    if run_cache_size < 0:
+        raise ValueError(f"data_io.run_cache_size must be non-negative, got {run_cache_size}.")
+    if run_aware_sampling and active_run_pool_size <= 0:
+        raise ValueError(
+            "data_io.active_run_pool_size must be positive when run-aware sampling is enabled."
+        )
     
     # Create source dataset
     logger.info(f"Loading source dataset from: {source_data_config.root}")
@@ -162,18 +176,36 @@ def pretrain_model(config, device, is_logger, source_data_config, logger=None):
         backend=getattr(data_io_cfg, "backend", "auto"),
         cache_dir_name=getattr(data_io_cfg, "cache_dir_name", ".flood_cache"),
         rebuild_cache=bool(getattr(data_io_cfg, "rebuild_cache", False)),
-        run_cache_size=int(getattr(data_io_cfg, "run_cache_size", 4)),
+        run_cache_size=run_cache_size,
+        cache_wait_timeout_seconds=float(
+            getattr(data_io_cfg, "cache_wait_timeout_seconds", 7200.0)
+        ),
+        stale_lock_seconds=float(getattr(data_io_cfg, "stale_lock_seconds", 300.0)),
     )
     
-    # Split into train/val
-    train_sz_source = int(0.9 * len(source_full_dataset))
-    source_train_raw, source_val_raw = split_dataset(
+    # Partition complete hydrographs so overlapping windows cannot cross splits.
+    source_train_raw, source_val_raw = split_dataset_by_run(
         source_full_dataset,
-        [train_sz_source, len(source_full_dataset) - train_sz_source],
+        train_fraction=0.9,
         seed=config.distributed.seed,
         offset=11,
     )
-    logger.info(f"Source domain: total={len(source_full_dataset)}, train={train_sz_source}, val={len(source_val_raw)}")
+    source_run_ids = {entry[0] for entry in source_full_dataset.sample_index}
+    train_run_ids = {
+        source_full_dataset.sample_index[idx][0] for idx in source_train_raw.indices
+    }
+    val_run_ids = {
+        source_full_dataset.sample_index[idx][0] for idx in source_val_raw.indices
+    }
+    split_strategy = (
+        "run-level" if train_run_ids.isdisjoint(val_run_ids) else "purged-temporal"
+    )
+    logger.info(
+        "Source domain: "
+        f"runs(total={len(source_run_ids)}, train={len(train_run_ids)}, val={len(val_run_ids)}), "
+        f"samples(total={len(source_full_dataset)}, train={len(source_train_raw)}, "
+        f"val={len(source_val_raw)}), split={split_strategy}"
+    )
     
     logger.info("Fitting source-domain normalizers incrementally...")
     normalizers = fit_normalizers_from_sample_index(source_train_raw)
@@ -187,7 +219,19 @@ def pretrain_model(config, device, is_logger, source_data_config, logger=None):
         source_train_ds,
         source_data_config,
         shuffle=True,
+        run_aware=run_aware_sampling,
+        active_pool_size=active_run_pool_size,
+        seed=int(config.distributed.seed) + 11,
     )
+    if run_aware_sampling:
+        logger.info(
+            f"Source training sampler: run-aware, active_pool_size={active_run_pool_size}"
+        )
+        if run_cache_size > 0 and active_run_pool_size > run_cache_size:
+            getattr(logger, "warning", logger.info)(
+                "active_run_pool_size exceeds run_cache_size; active hydrographs may "
+                "be evicted and reloaded within an epoch."
+            )
     
     logger.info("Preparing lazily normalized validation dataset...")
     source_val_ds = LazyNormalizedDataset(

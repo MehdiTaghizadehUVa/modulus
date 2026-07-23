@@ -18,8 +18,10 @@ from copy import deepcopy
 import importlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
+import socket
 import sys
 import time
 import types
@@ -140,6 +142,7 @@ from datasets import (  # noqa: E402
     LazyNormalizedRolloutDataset,
     prepare_flood_cache,
 )
+from datasets import cache_backend as cache_backend_module  # noqa: E402
 from data_processing import FloodGINODataProcessor, LpLossWrapper  # noqa: E402
 from models import CNNDomainClassifier, GINOWrapper, ImportableTorchModuleAdapter  # noqa: E402
 from models.domain_classifier import GradientReversal, GradientReversalFunction  # noqa: E402
@@ -155,7 +158,15 @@ from utils.checkpointing import (  # noqa: E402
     write_best_checkpoint_metadata,
 )
 from utils.normalization import fit_normalizers_from_sample_index  # noqa: E402
-from utils.runtime import create_loader_from_config, resolve_eval_interval  # noqa: E402
+from utils.runtime import (  # noqa: E402
+    RunAwareSampler,
+    create_data_loader,
+    create_loader_from_config,
+    resolve_eval_interval,
+    split_dataset_by_run,
+)
+
+runtime_module = sys.modules["utils.runtime"]
 
 
 _DEVICES = ["cpu"]
@@ -525,6 +536,256 @@ def test_cache_build_and_reuse(tmp_path):
     assert cache_path.stat().st_mtime_ns == original_mtime
     assert json.loads(manifest_path.read_text(encoding="utf-8")) == original_manifest
 
+
+def test_cache_lock_reclaims_stale_dead_owner(tmp_path):
+    """An abandoned cache lock must not block every future training run."""
+    lock_path = tmp_path / ".build.lock"
+    lock_path.write_text(
+        json.dumps(
+            {
+                "pid": 2_147_483_647,
+                "hostname": socket.gethostname(),
+                "token": "abandoned-owner",
+                "created_at": time.time(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with cache_backend_module._cache_lock(
+        lock_path,
+        timeout_seconds=0.5,
+        stale_after_seconds=1.0,
+        heartbeat_interval_seconds=0.01,
+    ):
+        owner = json.loads(lock_path.read_text(encoding="utf-8"))
+        assert owner["pid"] == os.getpid()
+        assert owner["token"] != "abandoned-owner"
+
+    assert not lock_path.exists()
+
+
+def test_cache_lock_reclaims_remote_owner_after_heartbeat_expires(tmp_path):
+    """A remote lock relies on heartbeat age because its PID cannot be queried."""
+    lock_path = tmp_path / ".build.lock"
+    lock_path.write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "hostname": "different-worker-host",
+                "token": "remote-owner",
+                "created_at": time.time() - 3600.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    old_time = time.time() - 3600.0
+    os.utime(lock_path, (old_time, old_time))
+
+    with cache_backend_module._cache_lock(
+        lock_path,
+        timeout_seconds=0.5,
+        stale_after_seconds=0.01,
+        heartbeat_interval_seconds=0.005,
+    ):
+        assert json.loads(lock_path.read_text(encoding="utf-8"))["pid"] == os.getpid()
+
+    assert not lock_path.exists()
+
+
+def test_cache_lock_does_not_steal_from_live_local_owner(tmp_path):
+    """A live local builder remains authoritative even if its mtime is old."""
+    lock_path = tmp_path / ".build.lock"
+    lock_path.write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "hostname": socket.gethostname(),
+                "token": "live-owner",
+                "created_at": time.time() - 3600.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    old_time = time.time() - 3600.0
+    os.utime(lock_path, (old_time, old_time))
+
+    try:
+        with pytest.raises(TimeoutError, match="live-owner"):
+            with cache_backend_module._cache_lock(
+                lock_path,
+                timeout_seconds=0.05,
+                stale_after_seconds=0.01,
+                heartbeat_interval_seconds=0.005,
+            ):
+                pass
+    finally:
+        lock_path.unlink(missing_ok=True)
+
+
+def test_cache_lock_heartbeat_and_owner_safe_cleanup(tmp_path):
+    """The lock heartbeat advances and cleanup cannot delete a replacement lock."""
+    lock_path = tmp_path / ".build.lock"
+    with cache_backend_module._cache_lock(
+        lock_path,
+        timeout_seconds=0.5,
+        stale_after_seconds=1.0,
+        heartbeat_interval_seconds=0.01,
+    ):
+        initial_mtime = lock_path.stat().st_mtime_ns
+        time.sleep(0.04)
+        assert lock_path.stat().st_mtime_ns > initial_mtime
+        lock_path.write_text(
+            json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "hostname": socket.gethostname(),
+                    "token": "replacement-owner",
+                    "created_at": time.time(),
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    assert lock_path.exists()
+    assert json.loads(lock_path.read_text(encoding="utf-8"))["token"] == "replacement-owner"
+
+
+def test_distributed_cache_build_is_rank_zero_only(tmp_path, monkeypatch):
+    """Nonzero ranks must consume rank zero's cache instead of parsing raw runs."""
+
+    class FakeDistributed:
+        current_rank = 0
+        plan = None
+        barriers = []
+
+        @staticmethod
+        def is_available():
+            return True
+
+        @staticmethod
+        def is_initialized():
+            return True
+
+        @staticmethod
+        def get_world_size():
+            return 2
+
+        @classmethod
+        def get_rank(cls):
+            return cls.current_rank
+
+        @classmethod
+        def broadcast_object_list(cls, object_list, src=0):
+            assert src == 0
+            if cls.current_rank == 0:
+                cls.plan = deepcopy(object_list[0])
+            else:
+                object_list[0] = deepcopy(cls.plan)
+
+        @staticmethod
+        def get_backend():
+            return "gloo"
+
+        @classmethod
+        def barrier(cls):
+            cls.barriers.append(cls.current_rank)
+
+    root = _make_source_root(tmp_path)
+    raw_loads = []
+    original_load_run_arrays = cache_backend_module._load_run_arrays
+
+    def recording_load_run_arrays(*args, **kwargs):
+        raw_loads.append(kwargs.get("run_id", args[1] if len(args) > 1 else None))
+        return original_load_run_arrays(*args, **kwargs)
+
+    monkeypatch.setattr(cache_backend_module, "dist", FakeDistributed)
+    monkeypatch.setattr(
+        cache_backend_module,
+        "_load_run_arrays",
+        recording_load_run_arrays,
+    )
+    cache_kwargs = {
+        "list_file_name": "train.txt",
+        "xy_file": "M40_XY.txt",
+        "static_files": STATIC_FILES,
+        "dynamic_patterns": DYNAMIC_PATTERNS,
+        "boundary_patterns": BOUNDARY_PATTERNS,
+        "rebuild": True,
+    }
+
+    FakeDistributed.current_rank = 0
+    rank_zero_manifest = prepare_flood_cache(root, **cache_kwargs)
+    rank_zero_load_count = len(raw_loads)
+
+    FakeDistributed.current_rank = 1
+    rank_one_manifest = prepare_flood_cache(root, **cache_kwargs)
+
+    assert rank_zero_load_count == len(rank_zero_manifest["run_ids"])
+    assert len(raw_loads) == rank_zero_load_count
+    assert rank_one_manifest == rank_zero_manifest
+    assert FakeDistributed.barriers == [0, 1]
+
+
+def test_distributed_cache_wait_detects_abandoned_rank_zero(tmp_path):
+    """Waiting ranks should fail promptly when rank zero's heartbeat is stale."""
+    status_path = tmp_path / ".build.status.json"
+    lock_path = tmp_path / ".build.lock"
+    build_id = "distributed-build"
+    lock_path.write_text(
+        json.dumps(
+            {
+                "pid": 2_147_483_647,
+                "hostname": socket.gethostname(),
+                "token": "dead-rank-zero",
+                "created_at": time.time() - 3600.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    status_path.write_text(
+        json.dumps(
+            {
+                "build_id": build_id,
+                "state": "building",
+                "lock_token": "dead-rank-zero",
+            }
+        ),
+        encoding="utf-8",
+    )
+    old_time = time.time() - 3600.0
+    os.utime(lock_path, (old_time, old_time))
+
+    with pytest.raises(RuntimeError, match="build was abandoned"):
+        cache_backend_module._wait_for_distributed_cache(
+            status_path,
+            lock_path,
+            build_id=build_id,
+            timeout_seconds=0.5,
+            stale_after_seconds=0.01,
+        )
+
+
+def test_distributed_cache_wait_propagates_rank_zero_error(tmp_path):
+    """Waiting ranks should receive the builder's actionable failure message."""
+    status_path = tmp_path / ".build.status.json"
+    build_id = "failed-build"
+    cache_backend_module._write_build_status(
+        status_path,
+        build_id=build_id,
+        state="error",
+        error="OSError: simulated disk full",
+    )
+
+    with pytest.raises(RuntimeError, match="simulated disk full"):
+        cache_backend_module._wait_for_distributed_cache(
+            status_path,
+            tmp_path / ".build.lock",
+            build_id=build_id,
+            timeout_seconds=0.5,
+            stale_after_seconds=0.01,
+        )
+
 def test_manifest_invalidation_when_tracked_files_change(tmp_path):
     root = _make_source_root(tmp_path)
     prepare_flood_cache(
@@ -809,6 +1070,223 @@ def test_resolve_eval_interval_rejects_non_positive_values():
     else:
         raise AssertionError("resolve_eval_interval should reject non-positive values")
 
+
+def test_split_dataset_by_run_is_deterministic_and_prevents_run_leakage():
+    """Every hydrograph must belong exclusively to train or validation."""
+
+    class WindowDataset(Dataset):
+        n_history = 3
+        sample_index = [
+            (run_id, target_t)
+            for run_id, sequence_length in [("H1", 8), ("H2", 5), ("H3", 7), ("H4", 4)]
+            for target_t in range(3, sequence_length)
+        ]
+
+        def __len__(self):
+            return len(self.sample_index)
+
+        def __getitem__(self, idx):
+            return self.sample_index[idx]
+
+    dataset = WindowDataset()
+    train_a, val_a = split_dataset_by_run(dataset, train_fraction=0.75, seed=17, offset=4)
+    train_b, val_b = split_dataset_by_run(dataset, train_fraction=0.75, seed=17, offset=4)
+
+    train_runs = {dataset.sample_index[idx][0] for idx in train_a.indices}
+    val_runs = {dataset.sample_index[idx][0] for idx in val_a.indices}
+    assert train_runs.isdisjoint(val_runs)
+    assert train_runs | val_runs == {"H1", "H2", "H3", "H4"}
+    assert sorted(train_a.indices + val_a.indices) == list(range(len(dataset)))
+    assert train_a.indices == train_b.indices
+    assert val_a.indices == val_b.indices
+
+
+def test_split_dataset_by_run_uses_purged_temporal_fallback_for_one_run():
+    """A one-run smoke dataset must not share physical timesteps across splits."""
+
+    class SingleRunDataset(Dataset):
+        n_history = 3
+        sample_index = [("H1", target_t) for target_t in range(3, 15)]
+
+        def __len__(self):
+            return len(self.sample_index)
+
+        def __getitem__(self, idx):
+            return self.sample_index[idx]
+
+    dataset = SingleRunDataset()
+    with pytest.warns(UserWarning, match="one eligible hydrograph"):
+        train_subset, val_subset = split_dataset_by_run(
+            dataset,
+            train_fraction=0.9,
+            seed=17,
+            offset=4,
+        )
+
+    train_targets = [dataset.sample_index[idx][1] for idx in train_subset.indices]
+    val_targets = [dataset.sample_index[idx][1] for idx in val_subset.indices]
+    assert max(train_targets) + dataset.n_history < min(val_targets)
+    assert len(train_subset) + len(val_subset) + dataset.n_history == len(dataset)
+
+
+def test_run_aware_sampler_preserves_coverage_randomness_and_pool_bound():
+    """Run-aware ordering should visit every window once with bounded active runs."""
+
+    class WindowDataset(Dataset):
+        sample_index = [
+            (run_id, target_t)
+            for run_id in ["H1", "H2", "H3", "H4", "H5"]
+            for target_t in range(3, 8)
+        ]
+
+        def __len__(self):
+            return len(self.sample_index)
+
+        def __getitem__(self, idx):
+            return self.sample_index[idx]
+
+    class OneToOneWrapper(Dataset):
+        def __init__(self, base_dataset):
+            self.base_dataset = base_dataset
+
+        def __len__(self):
+            return len(self.base_dataset)
+
+        def __getitem__(self, idx):
+            return self.base_dataset[idx]
+
+    base_dataset = WindowDataset()
+    subset = torch.utils.data.Subset(base_dataset, list(range(len(base_dataset))))
+    dataset = OneToOneWrapper(subset)
+    sampler = RunAwareSampler(dataset, active_pool_size=2, seed=29)
+
+    epoch_zero = list(iter(sampler))
+    assert sorted(epoch_zero) == list(range(len(dataset)))
+    assert len(epoch_zero) == len(set(epoch_zero))
+
+    remaining = {run_id: 5 for run_id in ["H1", "H2", "H3", "H4", "H5"]}
+    active_runs = set()
+    completed_runs = set()
+    max_active_runs = 0
+    targets_by_run = {run_id: [] for run_id in remaining}
+    for local_idx in epoch_zero:
+        run_id, target_t = base_dataset.sample_index[subset.indices[local_idx]]
+        assert run_id not in completed_runs
+        active_runs.add(run_id)
+        targets_by_run[run_id].append(target_t)
+        remaining[run_id] -= 1
+        if remaining[run_id] == 0:
+            active_runs.remove(run_id)
+            completed_runs.add(run_id)
+        max_active_runs = max(max_active_runs, len(active_runs))
+
+    assert max_active_runs <= 2
+    assert any(targets != sorted(targets) for targets in targets_by_run.values())
+    run_order = [
+        base_dataset.sample_index[subset.indices[local_idx]][0]
+        for local_idx in epoch_zero
+    ]
+    assert any(
+        run_order[idx] != run_order[idx + 1]
+        for idx in range(0, len(run_order) - 1, 2)
+    )
+
+    duplicate_sampler = RunAwareSampler(dataset, active_pool_size=2, seed=29)
+    assert list(iter(duplicate_sampler)) == epoch_zero
+    sampler.set_epoch(1)
+    assert list(iter(sampler)) != epoch_zero
+
+
+def test_run_aware_sampler_shards_complete_runs_across_balanced_ranks():
+    """Distributed ranks should receive disjoint complete runs when possible."""
+
+    class WindowDataset(Dataset):
+        sample_index = [
+            (run_id, target_t)
+            for run_id in ["H1", "H2", "H3", "H4"]
+            for target_t in range(3, 7)
+        ]
+
+        def __len__(self):
+            return len(self.sample_index)
+
+        def __getitem__(self, idx):
+            return self.sample_index[idx]
+
+    dataset = WindowDataset()
+    rank_zero = RunAwareSampler(
+        dataset,
+        active_pool_size=2,
+        seed=31,
+        num_replicas=2,
+        rank=0,
+    )
+    rank_one = RunAwareSampler(
+        dataset,
+        active_pool_size=2,
+        seed=31,
+        num_replicas=2,
+        rank=1,
+    )
+
+    rank_zero_indices = list(iter(rank_zero))
+    rank_one_indices = list(iter(rank_one))
+    rank_zero_runs = {dataset.sample_index[idx][0] for idx in rank_zero_indices}
+    rank_one_runs = {dataset.sample_index[idx][0] for idx in rank_one_indices}
+
+    assert len(rank_zero_indices) == len(rank_one_indices)
+    assert set(rank_zero_indices).isdisjoint(rank_one_indices)
+    assert set(rank_zero_indices) | set(rank_one_indices) == set(range(len(dataset)))
+    assert rank_zero_runs.isdisjoint(rank_one_runs)
+
+
+def test_create_data_loader_uses_run_aware_sampler_in_distributed_mode(monkeypatch):
+    """Loader construction should pass rank metadata to the locality sampler."""
+
+    class WindowDataset(Dataset):
+        sample_index = [
+            (run_id, target_t)
+            for run_id in ["H1", "H2", "H3", "H4"]
+            for target_t in range(3, 7)
+        ]
+
+        def __len__(self):
+            return len(self.sample_index)
+
+        def __getitem__(self, idx):
+            return torch.tensor(idx)
+
+    class FakeDistributedManager:
+        distributed = True
+        world_size = 2
+        rank = 1
+
+        @staticmethod
+        def is_initialized():
+            return True
+
+    monkeypatch.setattr(
+        runtime_module,
+        "DistributedManager",
+        FakeDistributedManager,
+    )
+    dataset = WindowDataset()
+    loader = create_data_loader(
+        dataset,
+        batch_size=2,
+        shuffle=True,
+        run_aware=True,
+        active_pool_size=2,
+        seed=37,
+    )
+
+    assert isinstance(loader.sampler, RunAwareSampler)
+    assert loader.sampler.num_replicas == 2
+    assert loader.sampler.rank == 1
+    assert loader.sampler.active_pool_size == 2
+    assert {dataset.sample_index[idx][0] for idx in loader.sampler} == {"H2", "H4"}
+
+
 def test_domain_adaptation_weight_config_defaults():
     """Full/default configs should enable adversarial DA, while short/smoke stay cheap."""
     from hydra import compose, initialize_config_dir
@@ -827,6 +1305,11 @@ def test_domain_adaptation_weight_config_defaults():
     assert short_cfg.training.da_class_loss_weight == pytest.approx(0.0)
     assert smoke_cfg.training.da_class_loss_weight == pytest.approx(0.0)
     assert smoke_cfg.source_data.rollout_length == 4
+    assert base_cfg.data_io.run_aware_sampling is True
+    assert base_cfg.data_io.active_run_pool_size is None
+    assert base_cfg.data_io.run_cache_size == 4
+    assert base_cfg.data_io.cache_wait_timeout_seconds == 7200
+    assert base_cfg.data_io.stale_lock_seconds == 300
     smoke_cfg_unresolved = OmegaConf.to_container(smoke_cfg, resolve=False)
     assert smoke_cfg_unresolved["rollout_data"]["root"].endswith("smoke_data/target")
     assert smoke_cfg_unresolved["rollout_data"]["list_file_name"] == "train.txt"
@@ -842,10 +1325,10 @@ def test_inference_normalizer_fallback_uses_full_source_train_split(monkeypatch)
         def __len__(self):
             return 10
 
-    def fake_split_dataset(dataset, lengths, seed, offset):
+    def fake_split_dataset(dataset, train_fraction, seed, offset):
         captured["split"] = {
             "dataset": dataset,
-            "lengths": lengths,
+            "train_fraction": train_fraction,
             "seed": seed,
             "offset": offset,
         }
@@ -856,7 +1339,7 @@ def test_inference_normalizer_fallback_uses_full_source_train_split(monkeypatch)
         return {"target": "normalizer"}
 
     monkeypatch.setattr(inference_script_module, "FloodDatasetWithQueryPoints", FakeSourceDataset)
-    monkeypatch.setattr(inference_script_module, "split_dataset", fake_split_dataset)
+    monkeypatch.setattr(inference_script_module, "split_dataset_by_run", fake_split_dataset)
     monkeypatch.setattr(inference_script_module, "fit_normalizers_from_sample_index", fake_fit_normalizers)
 
     cfg = OmegaConf.create(
@@ -890,7 +1373,7 @@ def test_inference_normalizer_fallback_uses_full_source_train_split(monkeypatch)
 
     assert normalizers == {"target": "normalizer"}
     assert captured["dataset_kwargs"]["data_root"] == "source-root"
-    assert captured["split"]["lengths"] == [9, 1]
+    assert captured["split"]["train_fraction"] == pytest.approx(0.9)
     assert captured["split"]["seed"] == 123
     assert captured["split"]["offset"] == 11
     assert captured["fit_subset"] == "train-subset"
@@ -2387,6 +2870,119 @@ def test_domain_adaptation_skips_classifier_when_weight_is_zero(device, tmp_path
     )
 
 @pytest.mark.parametrize("device", _DEVICES)
+def test_domain_adaptation_reloads_batches_each_epoch(device, tmp_path):
+    """Each DA epoch must read fresh batches instead of replaying cached objects."""
+
+    class CountingDataset(Dataset):
+        def __init__(self, seed):
+            generator = torch.Generator().manual_seed(seed)
+            self.samples = [
+                {
+                    "x": torch.rand(10, generator=generator),
+                    "y": torch.rand(3, generator=generator),
+                }
+                for _ in range(2)
+            ]
+            self.read_count = 0
+
+        def __len__(self):
+            return len(self.samples)
+
+        def __getitem__(self, idx):
+            self.read_count += 1
+            return self.samples[idx]
+
+    source_dataset = CountingDataset(seed=1)
+    target_dataset = CountingDataset(seed=2)
+    source_loader = DataLoader(source_dataset, batch_size=2, shuffle=False)
+    target_loader = DataLoader(target_dataset, batch_size=2, shuffle=False)
+
+    model = _SimpleDARegressionModel().to(device)
+    classifier = _ClassifierShouldNotRun().to(device)
+    trainer = DomainAdaptationTrainer(
+        model=model,
+        data_processor=None,
+        domain_classifier=classifier,
+        device=device,
+        verbose=False,
+    )
+    optimizer = torch.optim.Adam(
+        list(model.parameters()) + list(classifier.parameters()),
+        lr=1e-3,
+    )
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.9)
+
+    trainer.train_domain_adaptation(
+        src_loader=source_loader,
+        tgt_loader=target_loader,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        training_loss=lambda pred, y=None, **_: torch.nn.functional.mse_loss(pred, y),
+        class_loss_weight=0.0,
+        adaptation_epochs=2,
+        save_dir=tmp_path / "adapt_fresh_batches",
+        val_loaders={},
+    )
+
+    assert source_dataset.read_count == 2 * len(source_dataset)
+    assert target_dataset.read_count == 2 * len(target_dataset)
+
+
+@pytest.mark.parametrize(
+    ("empty_loader", "expected_message"),
+    [
+        ("source", "Source DataLoader produced no batches"),
+        ("target", "Target DataLoader at index 0 produced no batches"),
+        ("target_list", "requires at least one target DataLoader"),
+    ],
+)
+def test_domain_adaptation_rejects_empty_training_loaders(
+    empty_loader,
+    expected_message,
+    tmp_path,
+):
+    """DA should reject empty loaders before entering the optimization loop."""
+    samples = [{"x": torch.rand(10), "y": torch.rand(3)}]
+    valid_loader = DataLoader(_DictDataset(samples), batch_size=1, shuffle=False)
+    empty_data_loader = DataLoader(_DictDataset([]), batch_size=1, shuffle=False)
+    source_loader = empty_data_loader if empty_loader == "source" else valid_loader
+    if empty_loader == "target":
+        target_loader = empty_data_loader
+    elif empty_loader == "target_list":
+        target_loader = []
+    else:
+        target_loader = valid_loader
+
+    model = _SimpleDARegressionModel()
+    classifier = _ClassifierShouldNotRun()
+    trainer = DomainAdaptationTrainer(
+        model=model,
+        data_processor=None,
+        domain_classifier=classifier,
+        device="cpu",
+        verbose=False,
+    )
+    optimizer = torch.optim.Adam(
+        list(model.parameters()) + list(classifier.parameters()),
+        lr=1e-3,
+    )
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.9)
+
+    with pytest.raises(ValueError, match=expected_message):
+        trainer.train_domain_adaptation(
+            src_loader=source_loader,
+            tgt_loader=target_loader,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            training_loss=lambda pred, y=None, **_: torch.nn.functional.mse_loss(pred, y),
+            class_loss_weight=0.0,
+            adaptation_epochs=1,
+            save_dir=tmp_path / "adapt_empty_loader",
+            val_loaders={},
+        )
+
+
+@pytest.mark.parametrize("device", _DEVICES)
 def test_domain_adaptation_respects_da_lambda_max(device, tmp_path):
     """GRL scheduling should be scaled by the configured lambda max."""
     lambda_max = 0.5
@@ -2433,6 +3029,8 @@ def test_adapt_model_constructs_domain_classifier_with_keyword_args(tmp_path, mo
     class FakeTargetDataset(Dataset):
         def __init__(self, **kwargs):
             self.samples = [{"x": torch.rand(10), "y": torch.rand(3)} for _ in range(4)]
+            self.n_history = 3
+            self.sample_index = [(f"H{idx}", 3) for idx in range(len(self.samples))]
 
         def __len__(self):
             return len(self.samples)
@@ -2521,6 +3119,11 @@ def test_adapt_model_constructs_domain_classifier_with_keyword_args(tmp_path, mo
     monkeypatch.setattr(domain_adaptation_module, "LazyNormalizedDataset", FakeLazyNormalizedDataset)
     monkeypatch.setattr(domain_adaptation_module, "CNNDomainClassifier", fake_classifier)
     monkeypatch.setattr(domain_adaptation_module, "DomainAdaptationTrainer", FakeAdaptTrainer)
+    monkeypatch.setattr(
+        domain_adaptation_module,
+        "DistributedManager",
+        lambda: type("Dist", (), {"rank": 0})(),
+    )
 
     domain_adaptation_module.adapt_model(
         model=model,
@@ -2760,7 +3363,19 @@ def test_pretrain_model_wires_datasets_loaders_and_normalizer_save(device, tmp_p
     """Pretraining should split data, build loaders, invoke the trainer, and save normalizers on rank 0."""
     from omegaconf import OmegaConf
 
-    fake_samples = [{"index": idx} for idx in range(10)]
+    class FakeSourceDataset(Dataset):
+        def __init__(self):
+            self.samples = [{"index": idx} for idx in range(10)]
+            self.n_history = 3
+            self.sample_index = [(f"H{idx}", 3) for idx in range(len(self.samples))]
+
+        def __len__(self):
+            return len(self.samples)
+
+        def __getitem__(self, idx):
+            return self.samples[idx]
+
+    fake_source_dataset = FakeSourceDataset()
 
     class FakeLazyNormalizedDataset:
         def __init__(self, base_dataset, normalizers, query_res, apply_noise):
@@ -2814,16 +3429,21 @@ def test_pretrain_model_wires_datasets_loaders_and_normalizer_save(device, tmp_p
             "static": "static_norm",
         }
 
-    def fake_create_loader_from_config(dataset, data_config, shuffle):
+    def fake_create_loader_from_config(dataset, data_config, shuffle, **kwargs):
         loader = {
             "dataset": dataset,
             "shuffle": shuffle,
             "batch_size": data_config.batch_size,
+            "loader_kwargs": kwargs,
         }
         loader_calls.append(loader)
         return loader
 
-    monkeypatch.setattr(pretraining_module, "FloodDatasetWithQueryPoints", lambda **kwargs: fake_samples)
+    monkeypatch.setattr(
+        pretraining_module,
+        "FloodDatasetWithQueryPoints",
+        lambda **kwargs: fake_source_dataset,
+    )
     monkeypatch.setattr(pretraining_module, "LazyNormalizedDataset", FakeLazyNormalizedDataset)
     monkeypatch.setattr(pretraining_module, "fit_normalizers_from_sample_index", fake_fit_normalizers_from_sample_index)
     monkeypatch.setattr(pretraining_module, "create_loader_from_config", fake_create_loader_from_config)
@@ -2887,8 +3507,19 @@ def test_pretrain_model_wires_datasets_loaders_and_normalizer_save(device, tmp_p
     assert trainer.train_kwargs["test_loaders"]["source_val"]["shuffle"] is False
     assert trainer.source_train_loader["shuffle"] is True
     assert trainer.source_val_loader["shuffle"] is False
+    assert trainer.source_train_loader["loader_kwargs"] == {
+        "run_aware": True,
+        "active_pool_size": 4,
+        "seed": 134,
+    }
+    assert trainer.source_val_loader["loader_kwargs"] == {}
     assert len(trainer.source_train_dataset) == 9
     assert len(trainer.source_val_dataset) == 1
+    train_subset = trainer.source_train_dataset.base_dataset
+    val_subset = trainer.source_val_dataset.base_dataset
+    train_runs = {fake_source_dataset.sample_index[idx][0] for idx in train_subset.indices}
+    val_runs = {fake_source_dataset.sample_index[idx][0] for idx in val_subset.indices}
+    assert train_runs.isdisjoint(val_runs)
     assert trainer.source_train_dataset.apply_noise is True
     assert trainer.source_val_dataset.apply_noise is False
     assert (tmp_path / "pretrain" / "normalizers.pt").exists()

@@ -35,6 +35,7 @@ from .checkpointing import (
     write_best_checkpoint_metadata,
 )
 from .runtime import (
+    RunAwareSampler,
     create_data_loader,
     create_loader_from_config,
     make_torch_generator,
@@ -42,10 +43,12 @@ from .runtime import (
     seed_everything,
     set_loader_epoch,
     split_dataset,
+    split_dataset_by_run,
 )
 
 __all__ = [
     "BEST_CHECKPOINT_FILENAME",
+    "RunAwareSampler",
     "collect_all_fields",
     "create_data_loader",
     "create_loader_from_config",
@@ -57,6 +60,7 @@ __all__ = [
     "seed_everything",
     "set_loader_epoch",
     "split_dataset",
+    "split_dataset_by_run",
     "stack_and_fit_transform",
     "transform_with_existing_normalizers",
     "validate_checkpoint_files",

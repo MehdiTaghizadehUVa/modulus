@@ -249,6 +249,21 @@ Current runtime behavior:
 - dynamic and target share one per-channel state normalizer for `[WD, VX, VY]`
 - boundary stays compact as `(history, bc_dim)` until the processor expands it across cells
 
+### Training/Validation Partitioning
+
+Source pretraining and target adaptation split complete hydrograph run IDs rather
+than randomly splitting overlapping time windows. No run is present in both
+training and validation, and normalization statistics are fitted only from the
+source training runs. The split is deterministic for the configured distributed
+seed; source and target use independent seed offsets.
+
+If a development dataset contains only one eligible hydrograph, a true run-level
+split is impossible. The example instead uses an ordered temporal split and
+discards `n_history` windows between training and validation to prevent shared
+physical timesteps. A runtime warning identifies this fallback because its
+validation measures later-time forecasting on the same event, not generalization
+to an unseen hydrograph.
+
 Dataset classes:
 
 - `FloodDatasetWithQueryPoints`: one-step windows for training/validation
@@ -263,10 +278,28 @@ data_io:
   backend: auto
   cache_dir_name: .flood_cache
   rebuild_cache: false
+  cache_wait_timeout_seconds: 7200
+  stale_lock_seconds: 300
   run_cache_size: 4
+  run_aware_sampling: true
+  active_run_pool_size: null
 ```
 
 `backend=auto` selects the HDF5 cache path when `h5py` is installed, otherwise it uses `raw_txt`. Set `backend=raw_txt` explicitly to bypass the cache for debugging or parity checks.
+
+For a first-time distributed build, rank zero alone parses and writes the HDF5
+cache. Other ranks monitor the rank-zero heartbeat, then join a short distributed
+barrier after the cache is complete. `cache_wait_timeout_seconds` bounds the full
+build wait and defaults to two hours. `stale_lock_seconds` controls abandoned-lock
+recovery; a live process on the same host is never reclaimed solely because its
+file timestamp is old.
+
+Training loaders use a deterministic run-aware sampler by default. Runs and their
+windows are reshuffled every epoch, while at most `active_run_pool_size` runs are
+mixed at one time. `null` makes the active pool match `run_cache_size`, keeping the
+sampler working set aligned with the per-process LRU cache. Validation loaders
+remain unshuffled. Distributed training assigns complete runs to ranks when enough
+runs are available and pads only as needed to keep optimization-step counts equal.
 
 ## Configuration Reference
 
@@ -352,7 +385,8 @@ Behavior:
 
 - in distributed CUDA runs, the effective device comes from `DistributedManager`
 - the configured `distributed.device` value is only a single-process fallback
-- loaders attach `DistributedSampler` automatically in distributed mode
+- validation loaders attach `DistributedSampler` automatically in distributed mode
+- training loaders use the distributed-aware run sampler when `run_aware_sampling: true`
 
 Example multi-GPU launch:
 

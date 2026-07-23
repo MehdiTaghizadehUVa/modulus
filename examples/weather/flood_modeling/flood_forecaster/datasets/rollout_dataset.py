@@ -24,7 +24,11 @@ from typing import Dict
 import torch
 from torch.utils.data import Dataset
 
-from .cache_backend import create_run_store
+from .cache_backend import (
+    CACHE_LOCK_STALE_SECONDS,
+    CACHE_LOCK_TIMEOUT_SECONDS,
+    create_run_store,
+)
 
 
 class FloodRolloutTestDatasetNew(Dataset):
@@ -47,6 +51,8 @@ class FloodRolloutTestDatasetNew(Dataset):
         cache_dir_name=".flood_cache",
         rebuild_cache=False,
         run_cache_size=4,
+        cache_wait_timeout_seconds=CACHE_LOCK_TIMEOUT_SECONDS,
+        stale_lock_seconds=CACHE_LOCK_STALE_SECONDS,
     ):
         super().__init__()
         self.data_root = Path(rollout_data_root)
@@ -67,6 +73,8 @@ class FloodRolloutTestDatasetNew(Dataset):
         self.cache_dir_name = cache_dir_name
         self.rebuild_cache = rebuild_cache
         self.run_cache_size = int(run_cache_size)
+        self.cache_wait_timeout_seconds = float(cache_wait_timeout_seconds)
+        self.stale_lock_seconds = float(stale_lock_seconds)
 
         (
             self.run_store,
@@ -85,6 +93,8 @@ class FloodRolloutTestDatasetNew(Dataset):
             backend=self.backend,
             cache_dir_name=self.cache_dir_name,
             rebuild_cache=self.rebuild_cache,
+            cache_wait_timeout_seconds=self.cache_wait_timeout_seconds,
+            stale_lock_seconds=self.stale_lock_seconds,
         )
 
         self.run_ids = list(self.manifest.get("run_ids", []))

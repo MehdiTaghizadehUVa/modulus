@@ -35,8 +35,7 @@ import random
 from contextlib import nullcontext
 from timeit import default_timer
 from pathlib import Path
-from typing import Optional, Dict, Union, List, Tuple, Any
-from itertools import cycle
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -81,6 +80,28 @@ def _safe_tqdm_postfix(progress_bar: Any, values: Dict[str, str]) -> None:
             progress_bar.disable = True
 
 
+def _next_loader_batch(
+    loader: DataLoader,
+    iterator: Optional[Iterator[Any]],
+    *,
+    loader_name: str,
+) -> Tuple[Any, Iterator[Any]]:
+    r"""Return the next batch, restarting an exhausted loader without caching batches."""
+    if iterator is None:
+        iterator = iter(loader)
+    try:
+        return next(iterator), iterator
+    except StopIteration:
+        iterator = iter(loader)
+        try:
+            return next(iterator), iterator
+        except StopIteration as exc:
+            raise ValueError(
+                f"{loader_name} DataLoader produced no batches; domain adaptation "
+                "requires at least one batch per loader."
+            ) from exc
+
+
 from data_processing import LpLossWrapper
 from models import CNNDomainClassifier
 
@@ -108,7 +129,7 @@ from utils.runtime import (
     resolve_amp_autocast_enabled,
     resolve_eval_interval,
     set_loader_epoch,
-    split_dataset,
+    split_dataset_by_run,
 )
 from training.pretraining import create_scheduler
 
@@ -362,15 +383,25 @@ class DomainAdaptationTrainer:
             tgt_loaders = [tgt_loader]
         else:
             tgt_loaders = tgt_loader
-        
+
+        if not tgt_loaders:
+            raise ValueError("Domain adaptation requires at least one target DataLoader.")
+
         # Determine iteration strategy based on source loader
         base_batches = len(src_loader)
+        if base_batches == 0:
+            raise ValueError(
+                "Source DataLoader produced no batches; domain adaptation requires "
+                "at least one source batch."
+            )
+        for loader_index, loader in enumerate(tgt_loaders):
+            if len(loader) == 0:
+                raise ValueError(
+                    f"Target DataLoader at index {loader_index} produced no batches; "
+                    "domain adaptation requires at least one batch per target loader."
+                )
         total_iters = adaptation_epochs * base_batches
-        
-        # Create cycling iterators for all loaders
-        src_iter = cycle(src_loader)
-        tgt_iters = [cycle(loader) for loader in tgt_loaders]
-        
+
         msg1 = f"Starting domain adaptation training for {adaptation_epochs} epochs"
         msg2 = f"Source samples: {len(src_loader.dataset)}, Target loaders: {len(tgt_loaders)}"
         if self.logger:
@@ -390,6 +421,13 @@ class DomainAdaptationTrainer:
                 set_loader_epoch(loader, epoch)
             for loader in val_loaders.values():
                 set_loader_epoch(loader, epoch)
+
+            # Iterators must be created after set_epoch so each epoch receives the
+            # sampler's new ordering and freshly generated dataset augmentation.
+            src_iter = iter(src_loader)
+            # Target iterators are initialized lazily so unselected domains do not
+            # start worker pools or prefetch data unnecessarily.
+            tgt_iters: List[Optional[Iterator[Any]]] = [None] * len(tgt_loaders)
 
             self.on_epoch_start(epoch)
             self.model.train()
@@ -421,11 +459,19 @@ class DomainAdaptationTrainer:
                     lambda_val = 0.0
                 grl_owner.grl.set_lambda(lambda_val)
                  
-                # Randomly select one target domain from the list for this training step
-                chosen_tgt_iter = random.choice(tgt_iters)
-                 
-                src_batch = next(src_iter)
-                tgt_batch = next(chosen_tgt_iter)
+                # Randomly select one target domain for this training step. Shorter
+                # target loaders restart on demand without retaining previous batches.
+                target_index = random.randrange(len(tgt_loaders))
+                src_batch, src_iter = _next_loader_batch(
+                    src_loader,
+                    src_iter,
+                    loader_name="Source",
+                )
+                tgt_batch, tgt_iters[target_index] = _next_loader_batch(
+                    tgt_loaders[target_index],
+                    tgt_iters[target_index],
+                    loader_name=f"Target[{target_index}]",
+                )
                 
                 # Preprocess batches
                 if self.data_processor is not None:
@@ -875,6 +921,25 @@ def adapt_model(
 
     logger.info("Starting domain adaptation on source + target...")
     data_io_cfg = getattr(config, "data_io", {})
+    run_cache_size = int(getattr(data_io_cfg, "run_cache_size", 4))
+    run_aware_sampling = bool(getattr(data_io_cfg, "run_aware_sampling", True))
+    configured_pool_size = getattr(data_io_cfg, "active_run_pool_size", None)
+    active_run_pool_size = (
+        max(1, run_cache_size)
+        if configured_pool_size is None
+        else int(configured_pool_size)
+    )
+    if run_cache_size < 0:
+        raise ValueError(f"data_io.run_cache_size must be non-negative, got {run_cache_size}.")
+    if run_aware_sampling and active_run_pool_size <= 0:
+        raise ValueError(
+            "data_io.active_run_pool_size must be positive when run-aware sampling is enabled."
+        )
+    if run_aware_sampling and run_cache_size > 0 and active_run_pool_size > run_cache_size:
+        getattr(logger, "warning", logger.info)(
+            "active_run_pool_size exceeds run_cache_size; active hydrographs may "
+            "be evicted and reloaded within an epoch."
+        )
     
     # Validate inputs
     if not hasattr(model, 'fno_hidden_channels'):
@@ -887,34 +952,54 @@ def adapt_model(
     logger.info(f"Loading target dataset from: {target_data_config.root}")
     try:
         target_full_dataset = FloodDatasetWithQueryPoints(
-        data_root=target_data_config.root,
-        n_history=target_data_config.n_history,
-        xy_file=getattr(target_data_config, "xy_file", None),
-        query_res=getattr(target_data_config, "query_res", [64, 64]),
-        static_files=getattr(target_data_config, "static_files", []),
-        dynamic_patterns=getattr(target_data_config, "dynamic_patterns", {}),
-        boundary_patterns=getattr(target_data_config, "boundary_patterns", {}),
-        raise_on_smaller=True,
-        skip_before_timestep=getattr(target_data_config, "skip_before_timestep", 0),
-        noise_type=getattr(target_data_config, "noise_type", "none"),
-        noise_std=getattr(target_data_config, "noise_std", None),
-        backend=getattr(data_io_cfg, "backend", "auto"),
-        cache_dir_name=getattr(data_io_cfg, "cache_dir_name", ".flood_cache"),
-        rebuild_cache=bool(getattr(data_io_cfg, "rebuild_cache", False)),
-        run_cache_size=int(getattr(data_io_cfg, "run_cache_size", 4)),
+            data_root=target_data_config.root,
+            n_history=target_data_config.n_history,
+            xy_file=getattr(target_data_config, "xy_file", None),
+            query_res=getattr(target_data_config, "query_res", [64, 64]),
+            static_files=getattr(target_data_config, "static_files", []),
+            dynamic_patterns=getattr(target_data_config, "dynamic_patterns", {}),
+            boundary_patterns=getattr(target_data_config, "boundary_patterns", {}),
+            raise_on_smaller=True,
+            skip_before_timestep=getattr(target_data_config, "skip_before_timestep", 0),
+            noise_type=getattr(target_data_config, "noise_type", "none"),
+            noise_std=getattr(target_data_config, "noise_std", None),
+            backend=getattr(data_io_cfg, "backend", "auto"),
+            cache_dir_name=getattr(data_io_cfg, "cache_dir_name", ".flood_cache"),
+            rebuild_cache=bool(getattr(data_io_cfg, "rebuild_cache", False)),
+            run_cache_size=run_cache_size,
+            cache_wait_timeout_seconds=float(
+                getattr(data_io_cfg, "cache_wait_timeout_seconds", 7200.0)
+            ),
+            stale_lock_seconds=float(
+                getattr(data_io_cfg, "stale_lock_seconds", 300.0)
+            ),
         )
     except Exception as e:
         raise RuntimeError(f"Failed to load target dataset from {target_data_config.root}: {e}") from e
     
-    # Split into train/val
-    train_sz_target = int(0.9 * len(target_full_dataset))
-    target_train_raw, target_val_raw = split_dataset(
+    # Partition complete hydrographs so overlapping windows cannot cross splits.
+    target_train_raw, target_val_raw = split_dataset_by_run(
         target_full_dataset,
-        [train_sz_target, len(target_full_dataset) - train_sz_target],
+        train_fraction=0.9,
         seed=config.distributed.seed,
         offset=23,
     )
-    logger.info(f"Target domain: total={len(target_full_dataset)}, train={train_sz_target}, val={len(target_val_raw)}")
+    target_run_ids = {entry[0] for entry in target_full_dataset.sample_index}
+    train_run_ids = {
+        target_full_dataset.sample_index[idx][0] for idx in target_train_raw.indices
+    }
+    val_run_ids = {
+        target_full_dataset.sample_index[idx][0] for idx in target_val_raw.indices
+    }
+    split_strategy = (
+        "run-level" if train_run_ids.isdisjoint(val_run_ids) else "purged-temporal"
+    )
+    logger.info(
+        "Target domain: "
+        f"runs(total={len(target_run_ids)}, train={len(train_run_ids)}, val={len(val_run_ids)}), "
+        f"samples(total={len(target_full_dataset)}, train={len(target_train_raw)}, "
+        f"val={len(target_val_raw)}), split={split_strategy}"
+    )
     
     # Move normalizers to CPU temporarily
     for nm in normalizers.values():
@@ -1031,6 +1116,9 @@ def adapt_model(
             target_train_ds,
             target_data_config,
             shuffle=True,
+            run_aware=run_aware_sampling,
+            active_pool_size=active_run_pool_size,
+            seed=int(config.distributed.seed) + 23,
         ),
         optimizer=optimizer_adapt,
         scheduler=scheduler_adapt,

@@ -223,9 +223,21 @@ def train_flood_forecaster(cfg: DictConfig) -> None:
         log_rank_zero.info(f"Using device: {device}")
         log_rank_zero.info(f"Distributed: rank={dist.rank}, world_size={dist.world_size}")
         if hasattr(cfg, "data_io"):
+            configured_pool_size = cfg.data_io.get("active_run_pool_size", None)
+            active_pool_size = (
+                max(1, int(cfg.data_io.run_cache_size))
+                if configured_pool_size is None
+                else int(configured_pool_size)
+            )
+            run_aware_sampling = bool(
+                cfg.data_io.get("run_aware_sampling", True)
+            )
             log_rank_zero.info(
                 f"Data I/O backend: {cfg.data_io.backend} "
-                f"(cache_dir={cfg.data_io.cache_dir_name}, run_cache_size={cfg.data_io.run_cache_size})"
+                f"(cache_dir={cfg.data_io.cache_dir_name}, "
+                f"run_cache_size={cfg.data_io.run_cache_size}, "
+                f"run_aware_sampling={run_aware_sampling}, "
+                f"active_run_pool_size={active_pool_size})"
             )
         log_rank_zero.info("=" * 50)
 

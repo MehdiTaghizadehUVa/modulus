@@ -37,7 +37,11 @@ data_io:
   backend: "auto"  # Options: "auto", "hdf5", "raw_txt"
   cache_dir_name: ".flood_cache"  # Per-root cache directory for shared dataset artifacts
   rebuild_cache: false  # Force rebuilding the HDF5 cache even if manifest validation succeeds
+  cache_wait_timeout_seconds: 7200  # Maximum wait for a first-time distributed cache build
+  stale_lock_seconds: 300  # Reclaim a remote/dead cache builder after five missed minutes of heartbeats
   run_cache_size: 4  # Number of per-run tensors to keep in the in-process LRU cache
+  run_aware_sampling: true  # Shuffle through a bounded pool of runs instead of all windows globally
+  active_run_pool_size: null  # null matches run_cache_size; set explicitly to tune run mixing
 
 # Dataset related for training and one-step evaluation
 source_data:

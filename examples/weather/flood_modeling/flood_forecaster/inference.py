@@ -43,7 +43,7 @@ from utils.checkpointing import (
     resolve_checkpoint_epoch,
     validate_checkpoint_files,
 )
-from utils.runtime import seed_everything, split_dataset
+from utils.runtime import seed_everything, split_dataset_by_run
 
 
 def log_section(logger: RankZeroLoggingWrapper, title: str, char: str = "=", width: int = 60):
@@ -77,16 +77,19 @@ def recreate_normalizers_from_source_split(
         cache_dir_name=getattr(data_io_cfg, "cache_dir_name", ".flood_cache"),
         rebuild_cache=bool(getattr(data_io_cfg, "rebuild_cache", False)),
         run_cache_size=int(getattr(data_io_cfg, "run_cache_size", 4)),
+        cache_wait_timeout_seconds=float(
+            getattr(data_io_cfg, "cache_wait_timeout_seconds", 7200.0)
+        ),
+        stale_lock_seconds=float(getattr(data_io_cfg, "stale_lock_seconds", 300.0)),
     )
 
-    train_sz = int(0.9 * len(source_full_dataset))
-    if train_sz <= 0:
+    if len(source_full_dataset) == 0:
         raise ValueError(
             f"Cannot recreate normalizers from empty source split: {source_data_root}"
         )
-    source_train_subset, _ = split_dataset(
+    source_train_subset, _ = split_dataset_by_run(
         source_full_dataset,
-        [train_sz, len(source_full_dataset) - train_sz],
+        train_fraction=0.9,
         seed=cfg.distributed.seed,
         offset=11,
     )
@@ -256,6 +259,12 @@ def run_inference(cfg: DictConfig) -> None:
             cache_dir_name=getattr(data_io_cfg, "cache_dir_name", ".flood_cache"),
             rebuild_cache=bool(getattr(data_io_cfg, "rebuild_cache", False)),
             run_cache_size=int(getattr(data_io_cfg, "run_cache_size", 4)),
+            cache_wait_timeout_seconds=float(
+                getattr(data_io_cfg, "cache_wait_timeout_seconds", 7200.0)
+            ),
+            stale_lock_seconds=float(
+                getattr(data_io_cfg, "stale_lock_seconds", 300.0)
+            ),
         )
         log_rank_zero.info(f"Loaded {len(rollout_test_dataset)} rollout test samples")
 
