@@ -481,6 +481,7 @@ def _build_train_dataset(
     backend: str,
     noise_type: str = "none",
     noise_std=None,
+    expected_in_channels: int = 20,
 ) -> FloodDatasetWithQueryPoints:
     return FloodDatasetWithQueryPoints(
         data_root=root,
@@ -498,9 +499,15 @@ def _build_train_dataset(
         cache_dir_name=".flood_cache",
         rebuild_cache=False,
         run_cache_size=4,
+        expected_in_channels=expected_in_channels,
     )
 
-def _build_rollout_dataset(root: Path, *, backend: str) -> FloodRolloutTestDatasetNew:
+def _build_rollout_dataset(
+    root: Path,
+    *,
+    backend: str,
+    expected_in_channels: int = 20,
+) -> FloodRolloutTestDatasetNew:
     return FloodRolloutTestDatasetNew(
         rollout_data_root=root,
         n_history=3,
@@ -516,6 +523,7 @@ def _build_rollout_dataset(root: Path, *, backend: str) -> FloodRolloutTestDatas
         cache_dir_name=".flood_cache",
         rebuild_cache=False,
         run_cache_size=4,
+        expected_in_channels=expected_in_channels,
     )
 
 def _manual_fit_normalizers(dataset):
@@ -624,6 +632,96 @@ def test_cache_build_and_reuse(tmp_path):
     assert manifest == reused_manifest
     assert cache_path.stat().st_mtime_ns == original_mtime
     assert json.loads(manifest_path.read_text(encoding="utf-8")) == original_manifest
+
+
+def test_cache_rejects_missing_required_feature_file(tmp_path):
+    root = _make_source_root(tmp_path)
+    (root / "M40_VY_H1.txt").unlink()
+
+    with pytest.raises(FileNotFoundError, match="Required dynamic feature 'VY'"):
+        prepare_flood_cache(
+            root,
+            list_file_name="train.txt",
+            xy_file="M40_XY.txt",
+            static_files=STATIC_FILES,
+            dynamic_patterns=DYNAMIC_PATTERNS,
+            boundary_patterns=BOUNDARY_PATTERNS,
+            rebuild=True,
+        )
+
+
+def test_cache_rejects_missing_required_variable_pattern(tmp_path):
+    root = _make_source_root(tmp_path)
+    incomplete_patterns = dict(DYNAMIC_PATTERNS)
+    incomplete_patterns.pop("VY")
+
+    with pytest.raises(ValueError, match=r"Missing dynamic=\['VY'\]"):
+        prepare_flood_cache(
+            root,
+            list_file_name="train.txt",
+            xy_file="M40_XY.txt",
+            static_files=STATIC_FILES,
+            dynamic_patterns=incomplete_patterns,
+            boundary_patterns=BOUNDARY_PATTERNS,
+            rebuild=True,
+        )
+
+
+@pytest.mark.parametrize(
+    ("file_name", "replacement", "message"),
+    [
+        ("M40_WD_H1.txt", lambda data: data[:, :9952], "cell columns"),
+        (
+            "M40_US_InF_H1.txt",
+            lambda data: np.column_stack([data[:, 0], data[:, 0], data[:, 0]]),
+            "one value column",
+        ),
+    ],
+)
+def test_cache_rejects_invalid_feature_dimensions(tmp_path, file_name, replacement, message):
+    root = _make_source_root(tmp_path)
+    path = root / file_name
+    data = np.loadtxt(path, delimiter="\t", ndmin=2)
+    np.savetxt(path, replacement(data), delimiter="\t")
+
+    with pytest.raises(ValueError, match=message):
+        prepare_flood_cache(
+            root,
+            list_file_name="train.txt",
+            xy_file="M40_XY.txt",
+            static_files=STATIC_FILES,
+            dynamic_patterns=DYNAMIC_PATTERNS,
+            boundary_patterns=BOUNDARY_PATTERNS,
+            rebuild=True,
+        )
+
+
+def test_cache_rejects_nonfinite_features(tmp_path):
+    root = _make_source_root(tmp_path)
+    path = root / "M40_CE.txt"
+    data = np.loadtxt(path, delimiter="\t", ndmin=2)
+    data[0, 0] = np.nan
+    np.savetxt(path, data, delimiter="\t")
+
+    with pytest.raises(ValueError, match="NaN or infinite"):
+        prepare_flood_cache(
+            root,
+            list_file_name="train.txt",
+            xy_file="M40_XY.txt",
+            static_files=STATIC_FILES,
+            dynamic_patterns=DYNAMIC_PATTERNS,
+            boundary_patterns=BOUNDARY_PATTERNS,
+            rebuild=True,
+        )
+
+
+def test_dataset_validates_derived_model_input_channels(tmp_path):
+    root = _make_source_root(tmp_path)
+    dataset = _build_train_dataset(root, backend="auto", expected_in_channels=20)
+
+    assert dataset.in_channels == 20
+    with pytest.raises(ValueError, match="input-channel mismatch"):
+        _build_train_dataset(root, backend="auto", expected_in_channels=19)
 
 
 def test_cache_lock_reclaims_stale_dead_owner(tmp_path):

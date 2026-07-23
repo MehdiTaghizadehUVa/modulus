@@ -81,6 +81,9 @@ def recreate_normalizers_from_source_split(
             getattr(data_io_cfg, "cache_wait_timeout_seconds", 7200.0)
         ),
         stale_lock_seconds=float(getattr(data_io_cfg, "stale_lock_seconds", 300.0)),
+        expected_in_channels=getattr(
+            getattr(cfg, "model", {}), "data_channels", None
+        ),
     )
 
     if len(source_full_dataset) == 0:
@@ -274,6 +277,9 @@ def run_inference(cfg: DictConfig) -> None:
             ),
             stale_lock_seconds=float(
                 getattr(data_io_cfg, "stale_lock_seconds", 300.0)
+            ),
+            expected_in_channels=getattr(
+                getattr(cfg, "model", {}), "data_channels", None
             ),
         )
         log_rank_zero.info(f"Loaded {len(rollout_test_dataset)} rollout test samples")

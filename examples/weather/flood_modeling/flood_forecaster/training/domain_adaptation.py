@@ -985,6 +985,9 @@ def adapt_model(
             stale_lock_seconds=float(
                 getattr(data_io_cfg, "stale_lock_seconds", 300.0)
             ),
+            expected_in_channels=getattr(
+                getattr(config, "model", {}), "data_channels", None
+            ),
         )
     except Exception as e:
         raise RuntimeError(f"Failed to load target dataset from {target_data_config.root}: {e}") from e

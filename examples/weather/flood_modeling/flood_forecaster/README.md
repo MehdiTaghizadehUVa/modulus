@@ -80,7 +80,7 @@ FloodForecaster expects one directory per domain split, with shared geometry/sta
 - `M40_FA.txt`: Manning roughness `(N,)` or `(N, C)`
 - `M40_A.txt`: additional static feature(s), typically `(N,)` or `(N, C)`
 
-Static files with more than `N` rows are trimmed to the reference geometry length. Static files with fewer than `N` rows raise by default because `raise_on_smaller=True`.
+Every configured static file is required and must contain at least `N` rows. The first `N` rows consumed by the model must be finite; padding beyond the reference mesh is trimmed and ignored. Files with fewer cells fail. `M40_CA.txt` must contain exactly one value column.
 
 ### Per-Run Dynamic Files
 
@@ -90,13 +90,13 @@ The `{}` placeholders in `dynamic_patterns` are filled with run IDs, not timeste
 - `M40_VX_{run_id}.txt`: full x-velocity history `(T, N)`
 - `M40_VY_{run_id}.txt`: full y-velocity history `(T, N)`
 
-Dynamic files with extra cell columns are trimmed to `N`; files with fewer than `N` columns raise by default.
+All three dynamic files are required for every listed run. Each must have at least `N` cell columns and a common sequence length `T`. The first `N` columns consumed by the model must be finite; padded columns beyond the reference mesh are trimmed and ignored. Files with fewer cells fail.
 
 ### Per-Run Boundary Files
 
 - `M40_US_InF_{run_id}.txt`: upstream inflow history `(T,)`, `(T, 1)`, or `(T, 2)` when the first column is time and the second column is inflow
 
-If a boundary file has two columns, the loader treats the second column as the inflow value and drops the first column. Multiple boundary files are concatenated into compact `(T, C_bc)` tensors. If dynamic and boundary sequence lengths differ for a run, both are truncated to the shorter length with a warning.
+The inflow file is required for every listed run and must contain only finite values. If it has two columns, the loader treats the second column as inflow and drops the first time column. Dynamic and boundary sequence lengths must match exactly; inconsistent runs fail during cache creation rather than being silently truncated.
 
 ### Run Lists
 
@@ -242,6 +242,7 @@ Current runtime behavior:
 
 - raw text is cached into `<data_root>/.flood_cache/flood_forecaster_v1.h5`
 - a manifest tracks cache invalidation via file size/mtime and dataset metadata
+- cache creation validates required variables, file dimensions, finite values, and the derived model input-channel count before training starts
 - geometry and static tensors stay resident
 - per-run dynamic and boundary tensors are loaded through an in-process LRU cache
 - geometry is normalized once to the unit box and is not renormalized at runtime

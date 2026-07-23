@@ -42,13 +42,15 @@ except ImportError:  # pragma: no cover - h5py is an explicit dependency for the
     h5py = None
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 CACHE_FILE_NAME = "flood_forecaster_v1.h5"
 MANIFEST_FILE_NAME = "manifest.json"
 BUILD_STATUS_FILE_NAME = ".build.status.json"
 CACHE_LOCK_TIMEOUT_SECONDS = 7200.0
 CACHE_LOCK_STALE_SECONDS = 300.0
 CACHE_LOCK_HEARTBEAT_SECONDS = 5.0
+REQUIRED_DYNAMIC_KEYS = ("WD", "VX", "VY")
+REQUIRED_BOUNDARY_KEYS = ("inflow",)
 
 
 def _supports_tqdm_output(stream: Any) -> bool:
@@ -132,6 +134,36 @@ def _normalize_geometry_array(xy_arr: np.ndarray) -> np.ndarray:
     return (xy_arr - min_xy) / range_xy
 
 
+def _require_finite(array: np.ndarray, path: Path) -> None:
+    if not np.isfinite(array).all():
+        invalid_count = int(array.size - np.isfinite(array).sum())
+        raise ValueError(
+            f"Feature file {path} contains {invalid_count} NaN or infinite values."
+        )
+
+
+def _validate_required_patterns(
+    dynamic_patterns: Dict[str, str],
+    boundary_patterns: Dict[str, str],
+) -> None:
+    missing_dynamic = [key for key in REQUIRED_DYNAMIC_KEYS if not dynamic_patterns.get(key)]
+    missing_boundary = [key for key in REQUIRED_BOUNDARY_KEYS if not boundary_patterns.get(key)]
+    if missing_dynamic or missing_boundary:
+        raise ValueError(
+            "FloodForecaster requires dynamic patterns for WD, VX, and VY and a "
+            "boundary pattern for inflow. "
+            f"Missing dynamic={missing_dynamic}, boundary={missing_boundary}."
+        )
+
+    for key, pattern in [*dynamic_patterns.items(), *boundary_patterns.items()]:
+        try:
+            pattern.format("RUN_ID")
+        except (IndexError, KeyError, ValueError) as error:
+            raise ValueError(
+                f"Feature pattern for '{key}' must accept one positional run ID: {pattern!r}."
+            ) from error
+
+
 def _load_xy_tensor(data_root: Path, xy_file: Optional[str]) -> torch.Tensor:
     if not xy_file:
         raise ValueError("xy_file was not provided. Please specify it in the config.")
@@ -139,9 +171,10 @@ def _load_xy_tensor(data_root: Path, xy_file: Optional[str]) -> torch.Tensor:
     if not xy_path.exists():
         raise FileNotFoundError(f"Reference XY file not found: {xy_path}")
 
-    xy_arr = np.loadtxt(str(xy_path), delimiter="\t", dtype=np.float32)
+    xy_arr = np.loadtxt(str(xy_path), delimiter="\t", dtype=np.float32, ndmin=2)
     if xy_arr.ndim != 2 or xy_arr.shape[1] != 2:
         raise ValueError(f"{xy_file} must have shape (num_cells, 2). Got {xy_arr.shape}.")
+    _require_finite(xy_arr, xy_path)
     return torch.from_numpy(_normalize_geometry_array(xy_arr)).float()
 
 
@@ -151,18 +184,14 @@ def _trim_feature_rows(
     fname: str,
     raise_on_smaller: bool,
 ) -> Optional[np.ndarray]:
-    if arr.ndim == 1:
-        arr = arr[:, None]
-
     n_rows = arr.shape[0]
     if n_rows < reference_cell_count:
-        msg = f"{fname} has {n_rows} < {reference_cell_count}"
-        if raise_on_smaller:
-            raise ValueError(msg)
-        warnings.warn(msg + " -> skipping.")
-        return None
+        raise ValueError(
+            f"Static feature {fname} has {n_rows} cells; expected at least "
+            f"{reference_cell_count} from the geometry file."
+        )
     if n_rows > reference_cell_count:
-        arr = arr[:reference_cell_count, :]
+        arr = arr[:reference_cell_count]
     return arr.astype(np.float32, copy=False)
 
 
@@ -172,16 +201,12 @@ def _trim_dynamic_columns(
     fname: str,
     raise_on_smaller: bool,
 ) -> Optional[np.ndarray]:
-    if arr.ndim == 1:
-        arr = arr.reshape(1, -1)
-
     n_cols = arr.shape[1]
     if n_cols < reference_cell_count:
-        msg = f"{fname} has {n_cols} < {reference_cell_count}"
-        if raise_on_smaller:
-            raise ValueError(msg)
-        warnings.warn(msg + " -> skipping.")
-        return None
+        raise ValueError(
+            f"Dynamic feature {fname} has {n_cols} cell columns; expected at least "
+            f"{reference_cell_count} from the geometry file."
+        )
     if n_cols > reference_cell_count:
         arr = arr[:, :reference_cell_count]
     return arr.astype(np.float32, copy=False)
@@ -200,15 +225,17 @@ def _load_static_tensor(
     for fname in static_files:
         fpath = data_root / fname
         if not fpath.exists():
-            warnings.warn(f"Static file not found: {fpath}, skipping.")
-            continue
-        arr = np.loadtxt(str(fpath), delimiter="\t", dtype=np.float32)
+            raise FileNotFoundError(f"Required static feature file not found: {fpath}")
+        arr = np.loadtxt(str(fpath), delimiter="\t", dtype=np.float32, ndmin=2)
         arr = _trim_feature_rows(arr, reference_cell_count, fname, raise_on_smaller)
-        if arr is None:
-            continue
+        _require_finite(arr, fpath)
         static_arrays.append(arr)
         static_feature_names.append(str(fname))
         if Path(fname).name == "M40_CA.txt":
+            if arr.shape[1] != 1:
+                raise ValueError(
+                    f"Cell-area file {fpath} must contain one column; got {arr.shape[1]}."
+                )
             cell_area_tensor = torch.from_numpy(arr.reshape(-1).copy()).float()
 
     if static_arrays:
@@ -236,29 +263,34 @@ def _load_run_arrays(
     for key in dynamic_keys:
         pattern = dynamic_patterns.get(key)
         if pattern is None:
-            continue
+            raise ValueError(f"Missing filename pattern for required dynamic variable '{key}'.")
         fpath = data_root / pattern.format(run_id)
         if not fpath.exists():
-            warnings.warn(f"Dynamic file not found: {fpath}, skipping {key}.")
-            continue
-        arr = np.loadtxt(str(fpath), delimiter="\t", dtype=np.float32)
+            raise FileNotFoundError(
+                f"Required dynamic feature '{key}' for run '{run_id}' not found: {fpath}"
+            )
+        arr = np.loadtxt(str(fpath), delimiter="\t", dtype=np.float32, ndmin=2)
         arr = _trim_dynamic_columns(arr, reference_cell_count, fpath.name, raise_on_smaller)
-        if arr is None:
-            continue
+        _require_finite(arr, fpath)
         dynamic_arrays.append(arr)
         available_dynamic_keys.append(key)
 
     for key in boundary_keys:
         pattern = boundary_patterns.get(key)
         if pattern is None:
-            continue
+            raise ValueError(f"Missing filename pattern for required boundary variable '{key}'.")
         fpath = data_root / pattern.format(run_id)
         if not fpath.exists():
-            warnings.warn(f"Boundary file not found: {fpath}, skipping {key}.")
-            continue
-        arr = np.loadtxt(str(fpath), delimiter="\t", dtype=np.float32)
-        if arr.ndim == 1:
-            arr = arr[:, None]
+            raise FileNotFoundError(
+                f"Required boundary feature '{key}' for run '{run_id}' not found: {fpath}"
+            )
+        arr = np.loadtxt(str(fpath), delimiter="\t", dtype=np.float32, ndmin=2)
+        _require_finite(arr, fpath)
+        if arr.shape[1] not in (1, 2):
+            raise ValueError(
+                f"Boundary feature {fpath} must have one value column or two "
+                f"columns [time, value]; got shape {arr.shape}."
+            )
         if arr.shape[1] == 2:
             arr = arr[:, 1:2]
         boundary_arrays.append(arr.astype(np.float32, copy=False))
@@ -285,15 +317,12 @@ def _load_run_arrays(
 
     sequence_length = 0
     if dynamic_tensor is not None and boundary_tensor is not None:
-        sequence_length = min(dynamic_tensor.shape[0], boundary_tensor.shape[0])
         if dynamic_tensor.shape[0] != boundary_tensor.shape[0]:
-            warnings.warn(
-                f"Run {run_id} has mismatched dynamic/boundary lengths "
-                f"({dynamic_tensor.shape[0]} vs {boundary_tensor.shape[0]}). "
-                f"Truncating both to {sequence_length}."
+            raise ValueError(
+                f"Run {run_id} has mismatched dynamic and boundary sequence lengths: "
+                f"{dynamic_tensor.shape[0]} versus {boundary_tensor.shape[0]}."
             )
-        dynamic_tensor = dynamic_tensor[:sequence_length]
-        boundary_tensor = boundary_tensor[:sequence_length]
+        sequence_length = dynamic_tensor.shape[0]
         dynamic_length = sequence_length
         boundary_length = sequence_length
 
@@ -784,6 +813,30 @@ def _resolve_boundary_keys(boundary_patterns: Dict[str, str]) -> List[str]:
     return keys
 
 
+def validate_feature_channel_contract(
+    static_tensor: torch.Tensor,
+    *,
+    n_history: int,
+    dynamic_keys: List[str],
+    boundary_keys: List[str],
+    expected_in_channels: Optional[int],
+) -> int:
+    """Validate the model input width derived from cached feature dimensions."""
+    if int(n_history) <= 0:
+        raise ValueError(f"n_history must be positive, got {n_history}.")
+    derived_in_channels = int(static_tensor.shape[-1]) + int(n_history) * (
+        len(dynamic_keys) + len(boundary_keys)
+    )
+    if expected_in_channels is not None and derived_in_channels != int(expected_in_channels):
+        raise ValueError(
+            "FloodForecaster input-channel mismatch: "
+            f"static={static_tensor.shape[-1]} + history={n_history} * "
+            f"(dynamic={len(dynamic_keys)} + boundary={len(boundary_keys)}) = "
+            f"{derived_in_channels}, but model.data_channels={expected_in_channels}."
+        )
+    return derived_in_channels
+
+
 def _cache_manifest_is_valid(
     manifest: Optional[Dict[str, Any]],
     h5_path: Path,
@@ -849,6 +902,7 @@ def prepare_flood_cache(
     static_files = list(static_files or [])
     dynamic_patterns = dict(dynamic_patterns or {})
     boundary_patterns = dict(boundary_patterns or {})
+    _validate_required_patterns(dynamic_patterns, boundary_patterns)
     dynamic_keys = _resolve_dynamic_keys(dynamic_patterns)
     boundary_keys = _resolve_boundary_keys(boundary_patterns)
 
@@ -1174,6 +1228,7 @@ class RawTextRunStore:
         self.static_files = list(static_files or [])
         self.dynamic_patterns = dict(dynamic_patterns or {})
         self.boundary_patterns = dict(boundary_patterns or {})
+        _validate_required_patterns(self.dynamic_patterns, self.boundary_patterns)
         self.raise_on_smaller = raise_on_smaller
         self.dynamic_keys = _resolve_dynamic_keys(self.dynamic_patterns)
         self.boundary_keys = _resolve_boundary_keys(self.boundary_patterns)

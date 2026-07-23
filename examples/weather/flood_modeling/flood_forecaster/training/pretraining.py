@@ -181,6 +181,9 @@ def pretrain_model(config, device, is_logger, source_data_config, logger=None):
             getattr(data_io_cfg, "cache_wait_timeout_seconds", 7200.0)
         ),
         stale_lock_seconds=float(getattr(data_io_cfg, "stale_lock_seconds", 300.0)),
+        expected_in_channels=getattr(
+            getattr(config, "model", {}), "data_channels", None
+        ),
     )
     
     # Partition complete hydrographs so overlapping windows cannot cross splits.

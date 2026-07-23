@@ -29,6 +29,7 @@ from .cache_backend import (
     CACHE_LOCK_STALE_SECONDS,
     CACHE_LOCK_TIMEOUT_SECONDS,
     create_run_store,
+    validate_feature_channel_contract,
 )
 
 
@@ -60,6 +61,7 @@ class FloodDatasetWithQueryPoints(Dataset):
         run_cache_size=4,
         cache_wait_timeout_seconds=CACHE_LOCK_TIMEOUT_SECONDS,
         stale_lock_seconds=CACHE_LOCK_STALE_SECONDS,
+        expected_in_channels=None,
     ):
         super().__init__()
         self.data_root = Path(data_root)
@@ -81,6 +83,7 @@ class FloodDatasetWithQueryPoints(Dataset):
         self.run_cache_size = int(run_cache_size)
         self.cache_wait_timeout_seconds = float(cache_wait_timeout_seconds)
         self.stale_lock_seconds = float(stale_lock_seconds)
+        self.expected_in_channels = expected_in_channels
 
         if noise_std is None or (isinstance(noise_std, (list, tuple)) and len(noise_std) == 0):
             self.noise_type = "none"
@@ -126,6 +129,13 @@ class FloodDatasetWithQueryPoints(Dataset):
         self.reference_cell_count = int(self.manifest["reference_cell_count"])
         self.run_metadata = dict(self.manifest.get("run_metadata", {}))
         self.sequence_lengths = dict(self.manifest.get("sequence_lengths", {}))
+        self.in_channels = validate_feature_channel_contract(
+            self.static_data,
+            n_history=self.n_history,
+            dynamic_keys=self.dynamic_keys,
+            boundary_keys=self.boundary_keys,
+            expected_in_channels=self.expected_in_channels,
+        )
         self.sample_index = []
         self._run_cache: "OrderedDict[str, Dict[str, torch.Tensor]]" = OrderedDict()
 
