@@ -4,18 +4,22 @@ defaults:
 
 # Conservative full-dataset settings for a single 24 GB GPU.
 source_data:
-  batch_size: 1
+  batch_size: 2
   num_workers: 0
   pin_memory: false
   persistent_workers: false
   query_res: [32, 32]
 
 target_data:
-  batch_size: 1
+  batch_size: 2
   num_workers: 0
   pin_memory: false
   persistent_workers: false
   query_res: [32, 32]
+
+model:
+  in_gno_radius: 0.05
+  out_gno_radius: 0.05
 
 training:
   amp_autocast: false
