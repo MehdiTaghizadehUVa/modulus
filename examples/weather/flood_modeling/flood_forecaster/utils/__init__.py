@@ -30,6 +30,7 @@ from .normalization import (
 )
 from .checkpointing import (
     BEST_CHECKPOINT_FILENAME,
+    resolve_best_metric_value,
     resolve_checkpoint_epoch,
     validate_checkpoint_files,
     write_best_checkpoint_metadata,
@@ -56,6 +57,7 @@ __all__ = [
     "fit_normalizers_from_sample_index",
     "make_torch_generator",
     "resolve_amp_autocast_enabled",
+    "resolve_best_metric_value",
     "resolve_checkpoint_epoch",
     "seed_everything",
     "set_loader_epoch",

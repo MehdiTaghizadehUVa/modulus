@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Sequence, Union
+from typing import Any, Dict, List, Mapping, Sequence, Union
 
 import torch
 
@@ -113,6 +113,35 @@ def resolve_checkpoint_epoch(path: Union[str, Path], mode: Union[str, int, None]
     if not epochs:
         raise FileNotFoundError(f"Could not resolve a checkpoint epoch from files in {checkpoint_dir}")
     return max(epochs)
+
+
+def resolve_best_metric_value(
+    path: Union[str, Path],
+    metadata: Mapping[str, Any],
+    *,
+    default: float = float("inf"),
+) -> float:
+    """Restore the best metric from checkpoint metadata or its best sidecar.
+
+    Older FloodForecaster latest checkpoints stored ``None`` for this field. In
+    that case the sidecar preserves the best value selected before the latest
+    checkpoint was written.
+    """
+    metadata_value = metadata.get("best_metric_value")
+    if metadata_value is not None:
+        return float(metadata_value)
+
+    sidecar_path = Path(path) / BEST_CHECKPOINT_FILENAME
+    if not sidecar_path.exists():
+        return float(default)
+
+    with sidecar_path.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if "metric_value" not in payload:
+        raise ValueError(
+            f"Best-checkpoint sidecar {sidecar_path} is missing a metric_value field."
+        )
+    return float(payload["metric_value"])
 
 
 def validate_checkpoint_files(

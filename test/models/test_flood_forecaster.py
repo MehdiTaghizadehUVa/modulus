@@ -153,6 +153,7 @@ from training.pretraining import create_scheduler  # noqa: E402
 from training.trainer import NeuralOperatorTrainer  # noqa: E402
 from utils.checkpointing import (  # noqa: E402
     expected_model_files,
+    resolve_best_metric_value,
     resolve_checkpoint_epoch,
     validate_checkpoint_files,
     write_best_checkpoint_metadata,
@@ -327,6 +328,17 @@ def test_validate_checkpoint_files_fails_fast_on_missing_native_model(tmp_path: 
 
     with pytest.raises(FileNotFoundError, match="missing required files"):
         validate_checkpoint_files(tmp_path, model, 5)
+
+
+def test_resolve_best_metric_value_supports_older_latest_checkpoints(tmp_path: Path):
+    """An old latest checkpoint with a null metric should use the best sidecar."""
+    (tmp_path / "best_checkpoint.json").write_text(
+        json.dumps({"epoch": 2, "metric_name": "val_l2", "metric_value": 0.125}),
+        encoding="utf-8",
+    )
+
+    assert resolve_best_metric_value(tmp_path, {"best_metric_value": None}) == pytest.approx(0.125)
+    assert resolve_best_metric_value(tmp_path, {"best_metric_value": 0.25}) == pytest.approx(0.25)
 
 def test_real_gino_native_checkpoint_roundtrip(tmp_path: Path):
     model = _build_real_gino_wrapper(seed=0)
@@ -2521,8 +2533,13 @@ def test_trainer_save_checkpoint_uses_native_save_and_best_sidecar(tmp_path, mon
 
     assert saved["save_checkpoint"]["models"] is model
     assert saved["save_checkpoint"]["epoch"] == 7
+    assert saved["save_checkpoint"]["metadata"]["best_metric_value"] == pytest.approx(0.125)
     assert saved["write_best"]["metric_name"] == "val_l2"
     assert saved["write_best"]["metric_value"] == pytest.approx(0.125)
+
+    saved.clear()
+    trainer._save_checkpoint(save_dir, is_best=False)
+    assert saved["save_checkpoint"]["metadata"]["best_metric_value"] == pytest.approx(0.125)
 
 def test_trainer_resume_from_checkpoint_restores_best_metric_metadata(tmp_path, monkeypatch):
     """PhysicsNeMo resume should restore start epoch and best-metric metadata."""
@@ -2547,6 +2564,73 @@ def test_trainer_resume_from_checkpoint_restores_best_metric_metadata(tmp_path, 
 
     assert trainer.start_epoch == 4
     assert trainer.best_metric_value == pytest.approx(0.25)
+
+
+def test_trainer_train_preserves_resumed_best_metric(tmp_path, monkeypatch):
+    """Configuring save_best must not reset the value restored by resume."""
+
+    class TinyModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = nn.Parameter(torch.tensor(1.0))
+
+        def forward(self, x=None):
+            return x * self.weight
+
+    model = TinyModel()
+    loader = DataLoader(_DictDataset([{"x": torch.ones(1), "y": torch.ones(1)}]), batch_size=1)
+    trainer = NeuralOperatorTrainer(model=model, n_epochs=1, device="cpu", verbose=False)
+    optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1)
+    saved = []
+
+    def fake_resume(_):
+        trainer.best_metric_value = 0.2
+
+    monkeypatch.setattr(trainer, "_resume_from_checkpoint", fake_resume)
+    monkeypatch.setattr(trainer, "_evaluate_all", lambda **_: {"val_l2": 0.5})
+    monkeypatch.setattr(trainer, "_save_checkpoint", lambda path, is_best=False: saved.append(is_best))
+
+    trainer.train(
+        train_loader=loader,
+        test_loaders={"val": loader},
+        optimizer=optimizer,
+        scheduler=scheduler,
+        training_loss=lambda pred, y=None, **_: torch.nn.functional.mse_loss(pred, y),
+        eval_losses={"l2": lambda pred, y=None, **_: torch.nn.functional.mse_loss(pred, y)},
+        save_dir=tmp_path,
+        save_best="val_l2",
+        resume_from_dir=tmp_path,
+    )
+
+    assert trainer.best_metric_value == pytest.approx(0.2)
+    assert saved == [False]
+
+
+def test_trainer_plateau_scheduler_uses_global_mean_batch_objective(monkeypatch):
+    """Plateau scheduling should receive a mean rather than an epoch loss sum."""
+    model = nn.Linear(1, 1)
+    loader = DataLoader(TensorDataset(torch.ones(2, 1)), batch_size=1)
+    trainer = NeuralOperatorTrainer(model=model, n_epochs=1, device="cpu", verbose=False)
+    optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer)
+    scheduler.step = MagicMock()
+    trainer.optimizer = optimizer
+    trainer.scheduler = scheduler
+    trainer.regularizer = None
+    losses = iter([2.0, 4.0])
+
+    def fake_train_batch(*_):
+        value = next(losses)
+        return model.weight.sum() * 0.0 + value, {"y": torch.ones(1, 1)}
+
+    monkeypatch.setattr(trainer, "_train_one_batch", fake_train_batch)
+    monkeypatch.setattr(trainer, "_all_reduce_scalar", lambda value: value * 2)
+
+    metrics = trainer._train_one_epoch(0, loader, object())
+
+    scheduler.step.assert_called_once_with(pytest.approx(3.0))
+    assert metrics["train_err"] == pytest.approx(3.0)
 
 def test_trainer_resume_from_checkpoint_requires_physicsnemo_files(tmp_path, monkeypatch):
     """Resume should fail fast when a PhysicsNeMo checkpoint cannot be resolved."""
@@ -3621,8 +3705,96 @@ def test_domain_adaptation_save_checkpoint_includes_classifier_and_best_sidecar(
     assert len(saved["save"]["models"]) == 2
     assert saved["save"]["models"][0] is model
     assert saved["save"]["models"][1] is classifier
+    assert saved["save"]["metadata"]["best_metric_value"] == pytest.approx(0.2)
     assert saved["best"]["metric_name"] == "target_val"
     assert saved["best"]["metric_value"] == pytest.approx(0.2)
+
+    saved.clear()
+    trainer._save_checkpoint(
+        save_dir=tmp_path / "adapt_ckpt",
+        optimizer="optimizer",
+        scheduler="scheduler",
+        epoch=3,
+        save_classifier=True,
+        is_best=False,
+        metric_name="target_val",
+    )
+    assert saved["save"]["metadata"]["best_metric_value"] == pytest.approx(0.2)
+
+
+def test_domain_adaptation_resume_restores_best_metric(tmp_path, monkeypatch):
+    """DA resume should restore best selection state as well as model state."""
+    model = _SimpleDARegressionModel()
+    classifier = CNNDomainClassifier(
+        in_channels=4,
+        lambda_max=1.0,
+        da_cfg={"conv_layers": [{"out_channels": 4, "kernel_size": 1, "pool_size": 1}], "fc_dim": 1},
+    )
+    trainer = DomainAdaptationTrainer(model, None, classifier, device="cpu", verbose=False)
+    optimizer = torch.optim.Adam(list(model.parameters()) + list(classifier.parameters()), lr=1e-3)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1)
+
+    monkeypatch.setattr(domain_adaptation_module, "resolve_checkpoint_epoch", lambda *_: 4)
+    monkeypatch.setattr(domain_adaptation_module, "validate_checkpoint_files", lambda *_, **__: None)
+
+    def fake_load_checkpoint(**kwargs):
+        kwargs["metadata_dict"]["best_metric_value"] = 0.15
+
+    monkeypatch.setattr(domain_adaptation_module, "load_checkpoint", fake_load_checkpoint)
+
+    assert trainer._resume_from_checkpoint(tmp_path, optimizer, scheduler) == 4
+    assert trainer.best_metric_value == pytest.approx(0.15)
+
+
+def test_domain_adaptation_plateau_scheduler_uses_weighted_mean_objective(tmp_path):
+    """DA plateau scheduling should match the exact optimized scalar objective."""
+
+    class ConstantFeatureModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = nn.Parameter(torch.tensor(1.0))
+
+        def forward(self, x=None, return_features=False):
+            output = x[:, :1] * self.weight
+            if return_features:
+                features = torch.zeros(x.shape[0], 1, 2, 2, device=x.device) + self.weight * 0.0
+                return output, features
+            return output
+
+    class ConstantClassifier(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.bias = nn.Parameter(torch.tensor(0.0))
+            self.grl = type("GRL", (), {"lambda_": 1.0, "set_lambda": lambda self, value: setattr(self, "lambda_", value)})()
+
+        def forward(self, features):
+            return self.bias.expand(features.shape[0], 1)
+
+    model = ConstantFeatureModel()
+    classifier = ConstantClassifier()
+    trainer = DomainAdaptationTrainer(model, None, classifier, device="cpu", verbose=False)
+    loader = DataLoader(_DictDataset([{"x": torch.ones(1), "y": torch.ones(1)}] * 2), batch_size=1)
+    optimizer = torch.optim.SGD(list(model.parameters()) + list(classifier.parameters()), lr=1e-3)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer)
+    scheduler.step = MagicMock()
+    class_weight = 0.25
+
+    trainer.train_domain_adaptation(
+        src_loader=loader,
+        tgt_loader=loader,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        training_loss=lambda pred, **_: pred.sum() * 0.0 + 1.0,
+        class_loss_weight=class_weight,
+        adaptation_epochs=1,
+        save_dir=None,
+        val_loaders={},
+    )
+
+    expected = 2.0 + class_weight * torch.nn.functional.binary_cross_entropy_with_logits(
+        torch.zeros(2), torch.tensor([1.0, 0.0])
+    ).item()
+    scheduler.step.assert_called_once_with(pytest.approx(expected))
 
 def test_domain_adaptation_resume_requires_physicsnemo_checkpoint(tmp_path, monkeypatch):
     """DA resume should not fall back to neuralop-format checkpoints."""

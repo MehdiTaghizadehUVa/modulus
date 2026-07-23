@@ -52,6 +52,7 @@ from physicsnemo.distributed import DistributedManager
 from physicsnemo.launch.logging import PythonLogger, RankZeroLoggingWrapper
 from physicsnemo.utils.checkpoint import load_checkpoint, save_checkpoint
 from utils.checkpointing import (
+    resolve_best_metric_value,
     resolve_checkpoint_epoch,
     validate_checkpoint_files,
     write_best_checkpoint_metadata,
@@ -469,7 +470,6 @@ class NeuralOperatorTrainer:
                     f"save_best metric '{self.save_best}' not found in available metrics. "
                     f"Available metrics: {available_metrics}"
                 )
-            self.best_metric_value = float("inf")
 
         # Log training setup
         if self.verbose:
@@ -608,12 +608,6 @@ class NeuralOperatorTrainer:
         if self.regularizer is not None:
             avg_lasso_loss = self._all_reduce_scalar(avg_lasso_loss)
 
-        # Update learning rate scheduler using global metrics
-        if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-            self.scheduler.step(train_err)
-        else:
-            self.scheduler.step()
-
         epoch_train_time = default_timer() - t1
 
         # Normalize metrics
@@ -623,6 +617,12 @@ class NeuralOperatorTrainer:
             avg_lasso_loss /= n_samples if n_samples > 0 else 1
         else:
             avg_lasso_loss = None
+
+        # Plateau scheduling must be independent of dataset and world size.
+        if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+            self.scheduler.step(train_err)
+        else:
+            self.scheduler.step()
 
         # Get current learning rate
         lr = None
@@ -1092,7 +1092,7 @@ class NeuralOperatorTrainer:
         metadata = {
             "epoch": self.epoch,
             "is_best": is_best,
-            "best_metric_value": self.best_metric_value if is_best else None,
+            "best_metric_value": self.best_metric_value,
             "stage": self.checkpoint_stage,
         }
 
@@ -1167,7 +1167,9 @@ class NeuralOperatorTrainer:
             if self.verbose:
                 self.logger.info(f"Resuming training from epoch {resume_epoch}")
 
-        # Extract best metric value if available
-        if "best_metric_value" in metadata_dict:
-            self.best_metric_value = metadata_dict["best_metric_value"]
+        self.best_metric_value = resolve_best_metric_value(
+            resume_dir,
+            metadata_dict,
+            default=self.best_metric_value,
+        )
 

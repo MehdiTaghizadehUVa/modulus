@@ -120,6 +120,7 @@ except ImportError:
 
 from datasets import FloodDatasetWithQueryPoints, LazyNormalizedDataset
 from utils.checkpointing import (
+    resolve_best_metric_value,
     resolve_checkpoint_epoch,
     validate_checkpoint_files,
     write_best_checkpoint_metadata,
@@ -435,7 +436,7 @@ class DomainAdaptationTrainer:
             if self.data_processor is not None:
                 self.data_processor.train()
             
-            total_reg, total_adv = 0.0, 0.0
+            total_reg, total_adv, total_objective = 0.0, 0.0, 0.0
             n_batches = 0
              
             # Progress bar
@@ -537,6 +538,7 @@ class DomainAdaptationTrainer:
 
                 total_reg += reg_loss.item()
                 total_adv += adv_loss.item()
+                total_objective += loss.item()
                 n_batches += 1
 
                 # Update progress bar
@@ -550,14 +552,19 @@ class DomainAdaptationTrainer:
             
             total_reg = self._all_reduce_scalar(total_reg)
             total_adv = self._all_reduce_scalar(total_adv)
+            total_objective = self._all_reduce_scalar(total_objective)
             n_batches = self._all_reduce_scalar(n_batches)
-            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                scheduler.step(total_reg + total_adv)
-            else:
-                scheduler.step()
             avg_reg = total_reg / n_batches if n_batches > 0 else 0.0
             avg_adv = total_adv / n_batches if n_batches > 0 else 0.0
-            msg = f"[DA Epoch {epoch}] reg={avg_reg:.4f}, adv={avg_adv:.4f}, lambda={lambda_val:.3f}"
+            avg_objective = total_objective / n_batches if n_batches > 0 else 0.0
+            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(avg_objective)
+            else:
+                scheduler.step()
+            msg = (
+                f"[DA Epoch {epoch}] objective={avg_objective:.4f}, "
+                f"reg={avg_reg:.4f}, adv={avg_adv:.4f}, lambda={lambda_val:.3f}"
+            )
             if self.logger:
                 self.logger.info(msg)
             elif self.verbose:
@@ -768,7 +775,7 @@ class DomainAdaptationTrainer:
                     "stage": self.checkpoint_stage,
                     "epoch": epoch,
                     "is_best": is_best,
-                    "best_metric_value": self.best_metric_value if is_best else None,
+                    "best_metric_value": self.best_metric_value,
                 },
             )
 
@@ -840,6 +847,11 @@ class DomainAdaptationTrainer:
             epoch=resolved_epoch,
             metadata_dict=metadata_dict,
             device=self.device,
+        )
+        self.best_metric_value = resolve_best_metric_value(
+            resume_dir,
+            metadata_dict,
+            default=self.best_metric_value,
         )
         if self.logger:
             self.logger.info(f"Loaded checkpoint using PhysicsNeMo format (epoch={resolved_epoch})")
