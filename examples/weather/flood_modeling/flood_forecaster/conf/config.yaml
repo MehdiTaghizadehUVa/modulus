@@ -163,7 +163,7 @@ model:
   in_gno_channel_mlp_hidden_layers: [80, 80, 80]  # Input GNO MLP hidden layer sizes (list of integers)
   out_gno_channel_mlp_hidden_layers: [512, 256]  # Output GNO MLP hidden layer sizes (list of integers)
   gno_use_open3d: false  # Use Open3D for neighbor search (boolean)
-  gno_use_torch_scatter: false  # Use torch_scatter for operations (boolean)
+  gno_use_torch_scatter: true  # Use fused torch_scatter for GNO neighbor reductions; the pure-Python fallback is orders of magnitude slower on GPU. Auto-falls back with a warning if torch_scatter is not installed (boolean)
   out_gno_tanh: null  # Apply tanh activation to output GNO (boolean or null)
   fno_resolution_scaling_factor: null  # FNO resolution scaling factor (float or null)
   fno_block_precision: 'full'  # FNO block precision (string: 'full', 'half', etc.)

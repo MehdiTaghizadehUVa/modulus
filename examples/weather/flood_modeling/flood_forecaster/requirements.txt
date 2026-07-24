@@ -9,3 +9,16 @@ omegaconf>=2.3.0
 pandas>=1.3.0
 h5py>=3.0.0
 
+# torch-scatter provides the fused segment reduction used by GINO's neighbor
+# search. Without it, neuralop falls back to a pure-Python per-point loop that is
+# orders of magnitude slower per training step on GPU. The example still runs
+# without torch-scatter (it degrades loudly to the slow path), but installing it
+# is strongly recommended for any GPU run.
+#
+# torch-scatter must match your exact torch + CUDA build, so install it from the
+# matching wheel index rather than a plain `pip install`. For example, with
+# torch 2.5.1 + CUDA 12.1:
+#   pip install torch-scatter -f https://data.pyg.org/whl/torch-2.5.1+cu121.html
+# See https://github.com/rusty1s/pytorch_scatter for the wheel index that matches
+# your torch version (run `python -c "import torch; print(torch.__version__)"`).
+torch-scatter>=2.1.0

@@ -43,7 +43,11 @@ from utils.checkpointing import (
     resolve_checkpoint_epoch,
     validate_checkpoint_files,
 )
-from utils.runtime import seed_everything, split_dataset_by_run
+from utils.runtime import (
+    resolve_gno_scatter_flag,
+    seed_everything,
+    split_dataset_by_run,
+)
 
 
 def log_section(logger: RankZeroLoggingWrapper, title: str, char: str = "=", width: int = 60):
@@ -185,7 +189,13 @@ def run_inference(cfg: DictConfig) -> None:
         # Create a wrapper config that neuralop expects: {"model": {...}}
         # Extract autoregressive parameter before passing to get_model (GINO doesn't accept it)
         autoregressive = model_config_dict.pop("autoregressive", False)
-        
+
+        # Match training: resolve the fused torch_scatter path (or the slow fallback)
+        # so inference uses the same reduction backend the checkpoint was trained with.
+        model_config_dict["gno_use_torch_scatter"] = resolve_gno_scatter_flag(
+            model_config_dict.get("gno_use_torch_scatter"), logger=log_rank_zero
+        )
+
         # Convert to OmegaConf DictConfig (not struct mode) so it supports attribute access
         wrapper_config = OmegaConf.create({"model": model_config_dict})
         gino_model = get_model(wrapper_config)

@@ -41,10 +41,12 @@ from .runtime import (
     create_loader_from_config,
     make_torch_generator,
     resolve_amp_autocast_enabled,
+    resolve_gno_scatter_flag,
     seed_everything,
     set_loader_epoch,
     split_dataset,
     split_dataset_by_run,
+    torch_scatter_available,
 )
 
 __all__ = [
@@ -59,10 +61,12 @@ __all__ = [
     "resolve_amp_autocast_enabled",
     "resolve_best_metric_value",
     "resolve_checkpoint_epoch",
+    "resolve_gno_scatter_flag",
     "seed_everything",
     "set_loader_epoch",
     "split_dataset",
     "split_dataset_by_run",
+    "torch_scatter_available",
     "stack_and_fit_transform",
     "transform_with_existing_normalizers",
     "validate_checkpoint_files",

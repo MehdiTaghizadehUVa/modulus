@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import random
 import warnings
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
@@ -500,3 +501,84 @@ def resolve_amp_autocast_enabled(
             print(message)
         return False
     return enabled
+
+
+_GNO_SCATTER_WARNED = False
+
+
+def torch_scatter_available() -> bool:
+    """Return whether the optional ``torch_scatter`` extension is importable."""
+    return importlib.util.find_spec("torch_scatter") is not None
+
+
+def _emit_runtime_warning(logger: Optional[Any], message: str) -> None:
+    """Route a runtime warning through a logger when available, else print."""
+    if logger is not None and hasattr(logger, "warning"):
+        logger.warning(message)
+    else:
+        print(message)
+
+
+def resolve_gno_scatter_flag(
+    requested: Optional[bool],
+    *,
+    logger: Optional[Any] = None,
+) -> bool:
+    r"""
+    Resolve whether GINO neighbor reductions may use ``torch_scatter``.
+
+    neuralop's ``segment_csr`` reduction falls back to a pure-Python loop over
+    every output point when ``torch_scatter`` is unavailable or disabled. On GPU
+    that fallback serializes thousands of tiny kernel launches and runs orders of
+    magnitude slower per GNO reduction than the fused ``torch_scatter`` path,
+    without emitting any warning of its own.
+
+    This resolver keeps the fast path as the default while degrading loudly:
+
+    * If the fast path is requested but ``torch_scatter`` is not importable, it
+      warns once and returns ``False`` so training still runs (slowly) rather
+      than crashing at the first forward pass.
+    * If the fast path is available but explicitly disabled, it warns once that a
+      large speedup is being left on the table, then honors the request.
+
+    Parameters
+    ----------
+    requested : bool or None
+        The ``gno_use_torch_scatter`` value from config. ``None`` (unset) is
+        treated as a request for the fast path.
+    logger : optional
+        Logger exposing ``warning``; falls back to ``print`` when absent.
+
+    Returns
+    -------
+    bool
+        The effective flag to pass to the GINO backend.
+    """
+    global _GNO_SCATTER_WARNED
+    want_scatter = True if requested is None else bool(requested)
+    available = torch_scatter_available()
+
+    if want_scatter and not available:
+        if not _GNO_SCATTER_WARNED:
+            _emit_runtime_warning(
+                logger,
+                "torch_scatter is not installed; GINO neighbor reductions will use "
+                "neuralop's pure-Python fallback, which is orders of magnitude slower "
+                "per step on GPU. Install torch-scatter matching your torch/CUDA build "
+                "(see requirements.txt) to enable the fused path.",
+            )
+            _GNO_SCATTER_WARNED = True
+        return False
+
+    if not want_scatter and available:
+        if not _GNO_SCATTER_WARNED:
+            _emit_runtime_warning(
+                logger,
+                "gno_use_torch_scatter is disabled but torch_scatter is installed; "
+                "enabling it makes GINO neighbor reductions orders of magnitude faster. "
+                "Honoring the disabled setting.",
+            )
+            _GNO_SCATTER_WARNED = True
+        return False
+
+    return want_scatter

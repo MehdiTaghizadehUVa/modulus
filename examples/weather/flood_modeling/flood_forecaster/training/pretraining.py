@@ -40,6 +40,7 @@ from utils.runtime import (
     create_loader_from_config,
     resolve_amp_autocast_enabled,
     resolve_eval_interval,
+    resolve_gno_scatter_flag,
     split_dataset_by_run,
 )
 from training.trainer import NeuralOperatorTrainer
@@ -260,7 +261,13 @@ def pretrain_model(config, device, is_logger, source_data_config, logger=None):
     
     # Extract autoregressive parameter before passing to get_model (GINO doesn't accept it)
     autoregressive = model_config_dict.pop("autoregressive", False)
-    
+
+    # Resolve the fused torch_scatter reduction path, degrading loudly to the slow
+    # neuralop fallback when the extension is unavailable.
+    model_config_dict["gno_use_torch_scatter"] = resolve_gno_scatter_flag(
+        model_config_dict.get("gno_use_torch_scatter"), logger=logger
+    )
+
     # Create a wrapper config that neuralop expects: {"model": {...}}
     # Convert to OmegaConf DictConfig (not struct mode) so it supports attribute access
     wrapper_config = OmegaConf.create({"model": model_config_dict})
