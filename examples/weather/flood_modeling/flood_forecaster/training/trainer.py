@@ -832,6 +832,10 @@ class NeuralOperatorTrainer:
         if is_rank_zero and self.verbose:
             loader_iter = tqdm(data_loader, desc=f"Evaluating ({log_prefix})", unit="batch", leave=False)
         
+        # Bind before the loop so the post-loop wandb guard stays safe when the
+        # loader yields zero batches (otherwise `outs` is never assigned and the
+        # `outs is not None` check below raises UnboundLocalError).
+        outs = None
         with torch.no_grad():
             for idx, sample in enumerate(loader_iter):
                 return_output = idx == len(data_loader) - 1
