@@ -1,16 +1,25 @@
 # FloodForecaster: Domain-Adaptive GINO for Rapid Flood Forecasting
 
-FloodForecaster is a flood-surrogate example built around a Geometry-Informed Neural Operator (GINO) plus adversarial domain adaptation. It is designed for rapid next-step prediction of water depth and velocity on an unstructured floodplain mesh, followed by autoregressive rollout during inference.
+FloodForecaster is a flood-surrogate example built around a Geometry-Informed Neural
+Operator (GINO) plus adversarial domain adaptation. It is designed for rapid next-step
+prediction of water depth and velocity on an unstructured floodplain mesh, followed by
+autoregressive rollout during inference.
 
-The current implementation is tightly aligned to the GINO path in `neuralop`: the model is instantiated through `neuralop.get_model(...)`, wrapped in the example-local `GINOWrapper`, and trained/evaluated through PhysicsNeMo-style processors, trainers, and checkpointing utilities.
+The current implementation is tightly aligned to the GINO path in `neuralop`: the model
+is instantiated through `neuralop.get_model(...)`, wrapped in the example-local
+`GINOWrapper`, and trained/evaluated through PhysicsNeMo-style processors, trainers, and
+checkpointing utilities.
 
 ## Problem Overview
 
-Traditional physically based flood solvers are accurate, but expensive when high spatial resolution and many scenarios are required. FloodForecaster addresses that gap with a learned surrogate that:
+Traditional physically based flood solvers are accurate, but expensive when high spatial
+resolution and many scenarios are required. FloodForecaster addresses that gap with a
+learned surrogate that:
 
 - handles irregular terrain through geometry-aware operator layers
 - predicts water depth and velocity on the native cell set
-- supports transfer from a source river/domain to a target river/domain through adversarial fine-tuning
+- supports transfer from a source river/domain to a target river/domain through
+  adversarial fine-tuning
 - performs fast autoregressive rollout once trained
 
 ## Model Overview
@@ -18,7 +27,8 @@ Traditional physically based flood solvers are accurate, but expensive when high
 FloodForecaster uses a three-stage workflow:
 
 1. Source-domain pretraining on one-step prediction windows
-2. Source-plus-target domain adaptation with a gradient reversal layer and CNN domain classifier
+2. Source-plus-target domain adaptation with a gradient reversal layer and CNN domain
+   classifier
 3. Single-device rollout inference for multi-step autoregressive state evaluation
 
 ### Core GINO Path
@@ -27,18 +37,24 @@ The predictive backbone combines:
 
 - a GNO input/output path for mapping between mesh cells and the latent grid
 - an FNO latent core for global spatial processing
-- a FloodForecaster-specific `GINOWrapper` that makes the model checkpointable and compatible with the processor/trainer pipeline
+- a FloodForecaster-specific `GINOWrapper` that makes the model checkpointable and
+  compatible with the processor/trainer pipeline
 
 The runtime feature contract is:
 
-- `geometry`: unit-box-normalized mesh coordinates with shape `(N, 2)` or batched/shared `(B, N, 2)`
+- `geometry`: unit-box-normalized mesh coordinates with shape `(N, 2)` or batched/shared
+  `(B, N, 2)`
 - `static`: per-cell static features with shape `(N, C_static)`
 - `boundary`: compact boundary history with shape `(H, C_bc)` or batched `(B, H, C_bc)`
-- `dynamic`: state history with shape `(H, N, 3)` or batched `(B, H, N, 3)` for `[WD, VX, VY]`
+- `dynamic`: state history with shape `(H, N, 3)` or batched `(B, H, N, 3)` for
+  `[WD, VX, VY]`
 - `target`: next-step state with shape `(N, 3)` or batched `(B, N, 3)`
-- `query_points`: latent grid coordinates with shape `(Hx, Hy, 2)` or batched/shared `(B, Hx, Hy, 2)`
+- `query_points`: latent grid coordinates with shape `(Hx, Hy, 2)` or batched/shared
+  `(B, Hx, Hy, 2)`
 
-The processor broadcasts compact boundary histories across cells only when building the final per-cell feature tensor, so the dataset does not materialize spatially repeated hydrograph values for every sample.
+The processor broadcasts compact boundary histories across cells only when building the
+final per-cell feature tensor, so the dataset does not materialize spatially repeated
+hydrograph values for every sample.
 
 The model input-channel count must match:
 
@@ -46,7 +62,10 @@ The model input-channel count must match:
 data_channels = C_static + H * C_bc + H * 3
 ```
 
-With the default static files, `C_static=8` because `M40_XY.txt` contributes two static coordinate channels and the six scalar static files contribute one channel each. With `H=3` and one inflow boundary channel, the default `data_channels` is `8 + 3 * 1 + 3 * 3 = 20`.
+With the default static files, `C_static=8` because `M40_XY.txt` contributes two static
+coordinate channels and the six scalar static files contribute one channel each. With
+`H=3` and one inflow boundary channel, the default `data_channels` is
+`8 + 3 * 1 + 3 * 3 = 20`.
 
 ### Domain Adaptation
 
@@ -56,23 +75,27 @@ Domain adaptation uses:
 - a gradient reversal layer (GRL)
 - a CNN-based domain classifier in `models/domain_classifier.py`
 
-The GRL schedule is scaled by `training.da_lambda_max`, and setting `training.da_class_loss_weight <= 0` disables the adversarial branch and falls back to supervised fine-tuning.
+The GRL schedule is scaled by `training.da_lambda_max`, and setting
+`training.da_class_loss_weight <= 0` disables the adversarial branch and falls back to
+supervised fine-tuning.
 
 ## Data Generation
 
-Utilities for synthetic hydrograph generation and HEC-RAS automation live in the separate FloodForecaster data-generation repository:
+Utilities for synthetic hydrograph generation and HEC-RAS automation live in the
+separate FloodForecaster data-generation repository:
 
 - [FloodForecaster data generation repository](https://github.com/MehdiTaghizadehUVa/FloodForecaster)
 
 That repository writes the native HDF5 dataset consumed directly by this example.
 
 The HEC-RAS source and target-domain projects used to generate the study data are
-archived on Zenodo: [FloodForecaster HEC-RAS Projects](https://doi.org/10.5281/zenodo.21631205).
+archived on Zenodo:
+[FloodForecaster HEC-RAS Projects](https://doi.org/10.5281/zenodo.21631205).
 
 ## Dataset Layout
 
-The recommended layout is one `flood_forecaster.h5` file under each configured
-domain root. The file stores shared tensors once and groups time series by run:
+The recommended layout is one `flood_forecaster.h5` file under each configured domain
+root. The file stores shared tensors once and groups time series by run:
 
 | HDF5 path | Shape | Meaning |
 | --- | --- | --- |
@@ -81,96 +104,162 @@ domain root. The file stores shared tensors once and groups time series by run:
 | `/cell_area` | `(N,)` | Optional cell area |
 | `/runs/<run_id>/dynamic` | `(T, N, 3)` | State channels `[WD, VX, VY]` |
 | `/runs/<run_id>/boundary` | `(T, 1)` | Compact inflow boundary |
-| `/splits/train`, `/splits/test` | `(R,)` strings | Run IDs for each dataset split |
+| `/splits/<split_name>` | `(R,)` strings | Explicit run membership |
 
-`data_io.backend=auto` detects this file and reads it directly. No feature text
-files, run-list text files, cache manifest, or first-run cache build are needed.
+`data_io.backend=auto` detects this file and reads it directly. No feature text files,
+run-list text files, cache manifest, or first-run cache build are needed. For source and
+target training, the loader selects `/splits/train` and then creates deterministic
+run-level training/validation subsets internally. Rollout selects the split named by
+`rollout_data.list_file_name`; the default `test.txt` selects `/splits/test`.
 
 ### Legacy Text Layout
 
-The text backend remains supported for existing datasets. It expects one
-directory per domain split, with shared geometry/static files plus per-run
-time-series files.
+The text backend remains supported for existing datasets. It expects one directory per
+domain split, with shared geometry/static files plus per-run time-series files.
 
 ### Shared Mesh and Static Files
 
-- `M40_XY.txt`: cell-center coordinates `(N, 2)`. The loader normalizes this geometry once to the unit box `[0, 1]^2` for GINO.
-- `M40_CA.txt`: cell area `(N,)` or `(N, 1)`. When present it is kept both as a static feature and as the optional `cell_area` field used by rollout metrics and plots.
+- `M40_XY.txt`: cell-center coordinates `(N, 2)`. The loader normalizes this geometry
+  once to the unit box `[0, 1]^2` for GINO.
+- `M40_CA.txt`: cell area `(N,)` or `(N, 1)`. When present it is kept both as a static
+  feature and as the optional `cell_area` field used by rollout metrics and plots.
 - `M40_CE.txt`: elevation `(N,)` or `(N, C)`
 - `M40_CS.txt`: slope `(N,)` or `(N, C)`
 - `M40_CU.txt`: curvature `(N,)` or `(N, C)`
 - `M40_FA.txt`: Manning roughness `(N,)` or `(N, C)`
 - `M40_A.txt`: additional static feature(s), typically `(N,)` or `(N, C)`
 
-Every configured static file is required and must contain at least `N` rows. The first `N` rows consumed by the model must be finite; padding beyond the reference mesh is trimmed and ignored. Files with fewer cells fail. `M40_CA.txt` must contain exactly one value column.
+Every configured static file is required and must contain at least `N` rows. The first
+`N` rows consumed by the model must be finite; padding beyond the reference mesh is
+trimmed and ignored. Files with fewer cells fail. `M40_CA.txt` must contain exactly one
+value column.
 
 ### Per-Run Dynamic Files
 
-The `{}` placeholders in `dynamic_patterns` are filled with run IDs, not timestep indices.
+The `{}` placeholders in `dynamic_patterns` are filled with run IDs, not timestep
+indices.
 
 - `M40_WD_{run_id}.txt`: full water-depth history `(T, N)`
 - `M40_VX_{run_id}.txt`: full x-velocity history `(T, N)`
 - `M40_VY_{run_id}.txt`: full y-velocity history `(T, N)`
 
-All three dynamic files are required for every listed run. Each must have at least `N` cell columns and a common sequence length `T`. The first `N` columns consumed by the model must be finite; padded columns beyond the reference mesh are trimmed and ignored. Files with fewer cells fail.
+All three dynamic files are required for every listed run. Each must have at least `N`
+cell columns and a common sequence length `T`. The first `N` columns consumed by the
+model must be finite; padded columns beyond the reference mesh are trimmed and ignored.
+Files with fewer cells fail.
 
 ### Per-Run Boundary Files
 
-- `M40_US_InF_{run_id}.txt`: upstream inflow history `(T,)`, `(T, 1)`, or `(T, 2)` when the first column is time and the second column is inflow
+- `M40_US_InF_{run_id}.txt`: upstream inflow history `(T,)`, `(T, 1)`, or `(T, 2)` when
+  the first column is time and the second column is inflow
 
-The inflow file is required for every listed run and must contain only finite values. If it has two columns, the loader treats the second column as inflow and drops the first time column. Dynamic and boundary sequence lengths must match exactly; inconsistent runs fail during cache creation rather than being silently truncated.
+The inflow file is required for every listed run and must contain only finite values. If
+it has two columns, the loader treats the second column as inflow and drops the first
+time column. Dynamic and boundary sequence lengths must match exactly; inconsistent runs
+fail during cache creation rather than being silently truncated.
 
 ### Run Lists
 
-- `train.txt`, `val.txt`, `test.txt`: list run IDs used to build datasets
+- `train.txt`: source or target candidate runs; training creates its own deterministic
+  run-level training/validation partition from this list
+- `test.txt`: rollout runs selected by the default inference configuration
 
-These run IDs are the values substituted into the filename patterns above. The loader accepts either one run ID per line or a single comma-separated line. Files are read with UTF-8 BOM handling, so accidental BOM characters in `train.txt` do not become part of the run ID.
+These run IDs are the values substituted into the filename patterns above. The loader
+accepts either one run ID per line or a single comma-separated line. Files are read with
+UTF-8 BOM handling, so accidental BOM characters do not become part of a run ID. For
+native HDF5, the list-file stem is used as the HDF5 split name; the text file itself is
+not required.
 
 ## Quick Start
 
 ### Installation
 
+PhysicsNeMo must be importable in the environment. From the repository root, use the
+supported Python version declared in `pyproject.toml` (currently Python 3.11 through
+3.13) and install the repository plus the example dependencies:
+
 ```bash
-pip install -r requirements.txt
+python -m pip install -e .
+python -m pip install -r examples/weather/flood_modeling/flood_forecaster/requirements.txt
+cd examples/weather/flood_modeling/flood_forecaster
 ```
 
-Prepare source, target, and rollout data directories following the layout above.
+`torch-scatter` must match the installed PyTorch and CUDA builds. Install the matching
+wheel described in `requirements.txt` before the second command when a compatible wheel
+is not already present. The example can fall back without the extension, but GNO
+reductions are then substantially slower.
+
+Prepare source, target, and rollout roots following the layout above. The paths in the
+shipped YAML files are examples from the development environment, not portable defaults;
+override all three data roots on another machine. Absolute paths are recommended because
+Hydra changes into its run directory.
 
 ### Configuration
 
-The main config is [conf/config.yaml](conf/config.yaml). The example also ships smaller presets:
+The main config is [conf/config.yaml](conf/config.yaml). The shipped profiles serve
+different purposes:
 
-- [config_smoke.yaml](conf/config_smoke.yaml)
-- [config_short.yaml](conf/config_short.yaml)
-- [config_full_single_gpu.yaml](conf/config_full_single_gpu.yaml)
-- [config_full_single_gpu_small.yaml](conf/config_full_single_gpu_small.yaml)
+- [config.yaml](conf/config.yaml) is the baseline full architecture. It uses batch
+  64, a `48 x 48` latent grid, and GNO radius `0.1`, so hardware-specific overrides
+  are normally required.
+- [config_full_single_gpu.yaml](conf/config_full_single_gpu.yaml) keeps the full
+  architecture but uses batch 2, a `32 x 32` grid, and GNO radius `0.05` for a
+  single approximately 24 GB GPU.
+- [config_full_single_gpu_small.yaml](conf/config_full_single_gpu_small.yaml) is
+  the recommended first full-data run on one GPU. It inherits the single-GPU
+  settings and reduces FNO/GNO width and depth.
+- [config_short.yaml](conf/config_short.yaml) runs one source and one adaptation
+  epoch. Its local development roots must be overridden.
+- [config_smoke.yaml](conf/config_smoke.yaml) is a mechanical pipeline smoke
+  profile. The repository tracks only its source fixture.
 
 Important knobs:
 
 - `source_data.root`, `target_data.root`, `rollout_data.root`: dataset roots
 - `source_data.batch_size`, `target_data.batch_size`: per-domain batch sizes
 - `source_data.num_workers`, `pin_memory`, `persistent_workers`: DataLoader settings
-- `source_data.noise_type`, `source_data.noise_std`: dynamic-history training augmentation; supported noise types are `none`, `only_last`, `correlated`, `uncorrelated`, and `random_walk`
+- `source_data.noise_type`, `source_data.noise_std`: dynamic-history training
+  augmentation; supported noise types are `none`, `only_last`, `correlated`,
+  `uncorrelated`, and `random_walk`
 - `training.n_epochs_source`, `training.n_epochs_adapt`: stage lengths
 - `training.eval_interval`: validation cadence for both pretraining and adaptation
 - `training.learning_rate`, `training.adapt_learning_rate`: optimizer learning rates
 - `training.amp_autocast`: mixed precision toggle
-- `training.da_lambda_max`, `training.da_class_loss_weight`, `training.da_classifier`: domain-adaptation settings
-- `checkpoint.*`: save, resume, and inference checkpoint selection; `checkpoint.save_every: null` disables interval saves while still writing a final/latest checkpoint
+- `training.da_lambda_max`, `training.da_class_loss_weight`, `training.da_classifier`:
+  domain-adaptation settings
+- `checkpoint.*`: save, resume, and inference checkpoint selection;
+  `checkpoint.save_every: null` disables interval saves while still writing a
+  final/latest checkpoint
 - `data_io.*`: cache backend and per-process run-cache settings
 
 Hydra overrides work as usual, for example:
 
 ```bash
-python train.py --config-name config_full_single_gpu_small source_data.root=/path/to/source target_data.root=/path/to/target
+python train.py --config-name config_full_single_gpu_small \
+  source_data.root=/absolute/path/to/source \
+  target_data.root=/absolute/path/to/target \
+  checkpoint.save_dir=/absolute/path/to/checkpoints
 ```
 
 ### Training
 
-Run the full training pipeline:
+For a first single-GPU full-data run, start with the smaller model:
 
 ```bash
-python train.py --config-name config
+python train.py --config-name config_full_single_gpu_small \
+  source_data.root=/absolute/path/to/source \
+  target_data.root=/absolute/path/to/target \
+  checkpoint.save_dir=/absolute/path/to/checkpoints_small
+```
+
+Use the full-width single-GPU model after the data and checkpoint paths have been
+validated:
+
+```bash
+python train.py --config-name config_full_single_gpu \
+  source_data.root=/absolute/path/to/source \
+  target_data.root=/absolute/path/to/target \
+  checkpoint.save_dir=/absolute/path/to/checkpoints_full
 ```
 
 This performs:
@@ -179,6 +268,9 @@ This performs:
 2. target-domain adaptation
 
 `train.py` does not run rollout evaluation. Use `inference.py` for rollout and plots.
+For a completely fresh run, use a new or empty `checkpoint.save_dir` and leave both
+resume settings `null`. Reusing a directory without resuming can mix files from separate
+experiments and make `inference_epoch=latest` ambiguous.
 
 ### Resuming Training
 
@@ -192,12 +284,15 @@ Set:
 - `checkpoint.resume_from_source` to resume pretraining
 - `checkpoint.resume_from_adapt` to resume adaptation
 
-FloodForecaster now follows the native PhysicsNeMo checkpoint contract in those stage directories:
+FloodForecaster now follows the native PhysicsNeMo checkpoint contract in those stage
+directories:
 
 - model weights are written as `GINOWrapper.*.mdlus`
 - during adaptation, classifier weights are written as `CNNDomainClassifier.*.mdlus`
 - optimizer/scheduler/scaler state is written as `checkpoint.*.pt`
-- when `checkpoint.save_best` is enabled, the stage directory also records `best_checkpoint.json`
+- fitted state, boundary, and static normalizers are written as `normalizers.pt`
+- when `checkpoint.save_best` is enabled, the stage directory also records
+  `best_checkpoint.json`
 
 The supported restore workflow is:
 
@@ -205,51 +300,66 @@ The supported restore workflow is:
 2. wrap it with `GINOWrapper`
 3. call `physicsnemo.utils.checkpoint.load_checkpoint(...)` on the checkpoint directory
 
-Point resume and inference settings at the checkpoint directory, not at an individual `.mdlus` file.
+Point resume and inference settings at the checkpoint directory, not at an individual
+`.mdlus` file.
 
 ### Inference
 
 Run rollout inference and figure generation with:
 
 ```bash
-python inference.py --config-name config
+python inference.py --config-name config_full_single_gpu_small \
+  checkpoint.resume_from_adapt=/absolute/path/to/checkpoints_small/adapt \
+  rollout_data.root=/absolute/path/to/rollout \
+  rollout.out_dir=/absolute/path/to/rollout_outputs
 ```
+
+Inference must use the same model profile and architecture settings as the checkpoint.
+`checkpoint.resume_from_adapt` takes precedence over `checkpoint.resume_from_source`;
+use the latter to evaluate a pretraining-only checkpoint. `checkpoint.inference_epoch`
+accepts `best` (default), `latest`, or an integer epoch.
 
 Inference:
 
 - restores a source or adapted checkpoint directory
-- rebuilds/fits the required normalizers
+- loads checkpoint normalizers, or deterministically refits them from the full source
+  training partition if `normalizers.pt` is unavailable
 - loads rollout runs lazily
 - performs canonical autoregressive rollout in `inference/rollout.py`
 - generates figures, animations, and aggregated metrics
 
-The inference path is single-device only. Distributed rollout splitting is not implemented in this example.
+The inference path is single-device only. Distributed rollout splitting is not
+implemented in this example.
 
 Rollout semantics are:
 
-- the initial window is the normalized history slice `dynamic[skip_before_timestep : skip_before_timestep + history_steps]`
-- the model input at each step is built from shared static features plus the current boundary-history window plus the current dynamic-history window
-- the predicted next normalized state is appended back into the dynamic window, so state rollout is truly autoregressive
-- the boundary window is advanced with the next ground-truth boundary value from the dataset, so inflow forcing is teacher-forced rather than predicted
+- the initial window is the normalized history slice
+  `dynamic[skip_before_timestep : skip_before_timestep + history_steps]`
+- the model input at each step is built from shared static features plus the current
+  boundary-history window plus the current dynamic-history window
+- the predicted next normalized state is appended back into the dynamic window, so state
+  rollout is truly autoregressive
+- the boundary window is advanced with the next ground-truth boundary value from the
+  dataset, so inflow forcing is teacher-forced rather than predicted
 - metrics and plots are reported after inverse normalization in physical units
 
 ### Example Rollout Animations
 
-The following reference animations show the rollout visualization produced by `inference.py`. Each animation compares ground-truth and predicted water depth/velocity fields over time.
+The following reference animations show the rollout visualization produced by
+`inference.py`. Each animation compares ground-truth and predicted water depth/velocity
+fields over time.
 
-**Source domain rollout**
+#### Source Domain Rollout
 
-<p align="center">
-  <img src="../../../../docs/img/floodforecaster_source_domain.gif" alt="FloodForecaster source-domain rollout animation" width="80%" />
-</p>
+![Source rollout](../../../../docs/img/floodforecaster_source_domain.gif)
 
-**Target domain rollout**
+#### Target Domain Rollout
 
-<p align="center">
-  <img src="../../../../docs/img/floodforecaster_target_domain.gif" alt="FloodForecaster target-domain rollout animation" width="80%" />
-</p>
+![Target rollout](../../../../docs/img/floodforecaster_target_domain.gif)
 
-These GIFs are committed reference assets under `docs/img/`. New inference runs write per-hydrograph rollout animations and companion plots under the configured `rollout.out_dir`.
+These GIFs are committed reference assets under `docs/img/`. New inference runs write
+per-hydrograph rollout animations and companion plots under the configured
+`rollout.out_dir`.
 
 ## Dataset Loading and Normalization
 
@@ -257,43 +367,48 @@ The dataset stack lives under `datasets/`:
 
 - [flood_dataset.py](datasets/flood_dataset.py): one-step training/validation dataset
 - [rollout_dataset.py](datasets/rollout_dataset.py): full-sequence rollout dataset
-- [normalized_dataset.py](datasets/normalized_dataset.py): lazy and eager normalization wrappers
-- [cache_backend.py](datasets/cache_backend.py): native HDF5, cached text, and raw-text backends
+- [normalized_dataset.py](datasets/normalized_dataset.py): lazy and eager normalization
+  wrappers
+- [cache_backend.py](datasets/cache_backend.py): native HDF5, cached text, and raw-text
+  backends
 
 Current runtime behavior:
 
 - native `<data_root>/flood_forecaster.h5` files are read directly
 - legacy raw text is cached into `<data_root>/.flood_cache/flood_forecaster_v1.h5`
 - a manifest tracks cache invalidation via file size/mtime and dataset metadata
-- cache creation validates required variables, file dimensions, finite values, and the derived model input-channel count before training starts
+- cache creation validates required variables, file dimensions, finite values, and the
+  derived model input-channel count before training starts
 - geometry and static tensors stay resident
 - per-run dynamic and boundary tensors are loaded through an in-process LRU cache
 - geometry is normalized once to the unit box and is not renormalized at runtime
 - query grids are built directly from that unit-box geometry
 - dynamic and target share one per-channel state normalizer for `[WD, VX, VY]`
-- boundary stays compact as `(history, bc_dim)` until the processor expands it across cells
+- boundary stays compact as `(history, bc_dim)` until the processor expands it across
+  cells
 
 ### Training/Validation Partitioning
 
-Source pretraining and target adaptation split complete hydrograph run IDs rather
-than randomly splitting overlapping time windows. No run is present in both
-training and validation, and normalization statistics are fitted only from the
-source training runs. The split is deterministic for the configured distributed
-seed; source and target use independent seed offsets.
+Source pretraining and target adaptation split complete hydrograph run IDs rather than
+randomly splitting overlapping time windows. No run is present in both training and
+validation, and normalization statistics are fitted only from the source training runs.
+The split is deterministic for the configured distributed seed; source and target use
+independent seed offsets.
 
-If a development dataset contains only one eligible hydrograph, a true run-level
-split is impossible. The example instead uses an ordered temporal split and
-discards `n_history` windows between training and validation to prevent shared
-physical timesteps. A runtime warning identifies this fallback because its
-validation measures later-time forecasting on the same event, not generalization
-to an unseen hydrograph.
+If a development dataset contains only one eligible hydrograph, a true run-level split
+is impossible. The example instead uses an ordered temporal split and discards
+`n_history` windows between training and validation to prevent shared physical
+timesteps. A runtime warning identifies this fallback because its validation measures
+later-time forecasting on the same event, not generalization to an unseen hydrograph.
 
 Dataset classes:
 
 - `FloodDatasetWithQueryPoints`: one-step windows for training/validation
 - `FloodRolloutTestDatasetNew`: one full run at a time for rollout
-- `LazyNormalizedDataset` / `LazyNormalizedRolloutDataset`: current runtime wrappers used by training and inference
-- `NormalizedDataset` / `NormalizedRolloutTestDataset`: eager wrappers kept for compatibility and tests
+- `LazyNormalizedDataset` / `LazyNormalizedRolloutDataset`: current runtime wrappers
+  used by training and inference
+- `NormalizedDataset` / `NormalizedRolloutTestDataset`: eager wrappers kept for
+  compatibility and tests
 
 The top-level `data_io` config block controls caching:
 
@@ -310,25 +425,23 @@ data_io:
   active_run_pool_size: null
 ```
 
-`backend=auto` prefers the native HDF5 file when it exists. Otherwise it builds
-the legacy HDF5 cache when `h5py` is installed, falling back to `raw_txt` only
-when HDF5 is unavailable. Use `backend=native_hdf5` to require the direct file,
-`backend=hdf5` to require text-to-cache conversion, or `backend=raw_txt` for
-debugging and parity checks.
+`backend=auto` prefers the native HDF5 file when it exists. Otherwise it builds the
+legacy HDF5 cache when `h5py` is installed, falling back to `raw_txt` only when HDF5 is
+unavailable. Use `backend=native_hdf5` to require the direct file, `backend=hdf5` to
+require text-to-cache conversion, or `backend=raw_txt` for debugging and parity checks.
 
-For a first-time distributed build, rank zero alone parses and writes the HDF5
-cache. Other ranks monitor the rank-zero heartbeat, then join a short distributed
-barrier after the cache is complete. `cache_wait_timeout_seconds` bounds the full
-build wait and defaults to two hours. `stale_lock_seconds` controls abandoned-lock
-recovery; a live process on the same host is never reclaimed solely because its
-file timestamp is old.
+For a first-time distributed build, rank zero alone parses and writes the HDF5 cache.
+Other ranks monitor the rank-zero heartbeat, then join a short distributed barrier after
+the cache is complete. `cache_wait_timeout_seconds` bounds the full build wait and
+defaults to two hours. `stale_lock_seconds` controls abandoned-lock recovery; a live
+process on the same host is never reclaimed solely because its file timestamp is old.
 
 Training loaders use a deterministic run-aware sampler by default. Runs and their
-windows are reshuffled every epoch, while at most `active_run_pool_size` runs are
-mixed at one time. `null` makes the active pool match `run_cache_size`, keeping the
-sampler working set aligned with the per-process LRU cache. Validation loaders
-remain unshuffled. Distributed training assigns complete runs to ranks when enough
-runs are available and pads only as needed to keep optimization-step counts equal.
+windows are reshuffled every epoch, while at most `active_run_pool_size` runs are mixed
+at one time. `null` makes the active pool match `run_cache_size`, keeping the sampler
+working set aligned with the per-process LRU cache. Validation loaders remain
+unshuffled. Distributed training assigns complete runs to ranks when enough runs are
+available and pads only as needed to keep optimization-step counts equal.
 
 ## Configuration Reference
 
@@ -338,7 +451,16 @@ runs are available and pads only as needed to keep optimization-step counts equa
 source_data:
   root: "/path/to/source/data"
   xy_file: "M40_XY.txt"
-  static_files: ["M40_XY.txt", "M40_CA.txt", "M40_CE.txt", "M40_CS.txt", "M40_FA.txt", "M40_A.txt", "M40_CU.txt"]
+  static_files:
+    [
+      "M40_XY.txt",
+      "M40_CA.txt",
+      "M40_CE.txt",
+      "M40_CS.txt",
+      "M40_FA.txt",
+      "M40_A.txt",
+      "M40_CU.txt",
+    ]
   dynamic_patterns:
     WD: "M40_WD_{}.txt"
     VX: "M40_VX_{}.txt"
@@ -362,7 +484,9 @@ model:
   gno_embed_channels: 32
 ```
 
-This example is GINO-specific. `model_arch` is kept for neuralop config compatibility, but the surrounding wrapper, processor, checkpointing, and rollout code assume the GINO contract.
+This example is GINO-specific. `model_arch` is kept for neuralop config compatibility,
+but the surrounding wrapper, processor, checkpointing, and rollout code assume the GINO
+contract.
 
 ### Training Settings
 
@@ -384,7 +508,31 @@ training:
   da_class_loss_weight: 0.1
 ```
 
-The full/default configs enable adversarial domain adaptation with `da_class_loss_weight: 0.1`. `config_short.yaml` and `config_smoke.yaml` keep `da_class_loss_weight: 0.0` for fast supervised fine-tuning checks. The full-dataset single-GPU presets reduce batch and resolution for memory and speed. For example, `config_full_single_gpu.yaml` uses `batch_size: 1` with `query_res: [32, 32]`, and `config_full_single_gpu_small.yaml` keeps `query_res: [32, 32]` while reducing the model width/depth and using `batch_size: 2`.
+The full/default configs enable adversarial domain adaptation with
+`da_class_loss_weight: 0.1`. `config_short.yaml` and `config_smoke.yaml` keep
+`da_class_loss_weight: 0.0` for fast supervised fine-tuning checks. Both full-dataset
+single-GPU presets use `batch_size: 2`, `query_res: [32, 32]`, and input/output GNO
+radii of `0.05`; the small preset additionally reduces model width, depth, Fourier
+modes, and factorization rank.
+
+### Throughput and Memory
+
+GINO cost is dominated by mesh-to-grid and grid-to-mesh neighborhood operations, not
+only by parameter count. For the approximately 10,000-cell M40 mesh:
+
+- use native HDF5 and keep run-aware sampling enabled to avoid repeated text parsing and
+  HDF5 cache thrashing
+- install a `torch-scatter` wheel matched to the exact PyTorch/CUDA build; the unfused
+  reduction fallback is intended for compatibility, not full training
+- start with `batch_size: 2`, then increase only after measuring peak GPU memory
+- reduce GNO radius only with scientific validation because it changes each cell's
+  geometric neighborhood, not just runtime
+- `training.amp_autocast=true` can reduce memory on CUDA for power-of-two latent grids
+  such as `32 x 32`; the runtime disables AMP for non-power-of-two FFT shapes such as
+  `48 x 48` rather than allowing cuFFT to fail
+
+The single-GPU profiles keep AMP disabled by default so users opt in after validating
+their installed PyTorch, CUDA, neuralop, and `torch-scatter` builds.
 
 ### Domain Adaptation Classifier
 
@@ -400,22 +548,26 @@ training:
 
 ### Distributed Computing
 
-FloodForecaster uses PhysicsNeMo's `DistributedManager`, which automatically detects single-process, `torchrun`, OpenMPI, and SLURM execution environments.
+FloodForecaster uses PhysicsNeMo's `DistributedManager`, which automatically detects
+single-process, `torchrun`, OpenMPI, and SLURM execution environments.
 
 The shipped distributed block is intentionally small:
 
 ```yaml
 distributed:
   seed: 123
-  device: "cuda:0"
 ```
 
 Behavior:
 
 - in distributed CUDA runs, the effective device comes from `DistributedManager`
-- the configured `distributed.device` value is only a single-process fallback
+- in single-process runs, the effective device also comes from `DistributedManager`; the
+  existing `distributed.device` YAML field is retained for configuration compatibility
+  but is not consulted after initialization
 - validation loaders attach `DistributedSampler` automatically in distributed mode
 - training loaders use the distributed-aware run sampler when `run_aware_sampling: true`
+- domain adaptation synchronizes both `GINOWrapper` and the domain classifier
+- inference rejects `world_size > 1` because rollout output sharding is not implemented
 
 Example multi-GPU launch:
 
@@ -444,7 +596,8 @@ The example supports:
 - standard Python/PhysicsNeMo logging
 - optional Weights and Biases logging through the `wandb` config block
 
-Tracked quantities include training/validation losses, learning rate, and domain-classification loss when the adversarial branch is enabled.
+Tracked quantities include training/validation losses, learning rate, and
+domain-classification loss when the adversarial branch is enabled.
 
 ## Project Structure
 
@@ -463,10 +616,12 @@ FloodForecaster/
 |   `-- rollout_dataset.py
 |-- models/
 |   |-- gino_wrapper.py
-|   `-- domain_classifier.py
+|   |-- domain_classifier.py
+|   `-- types.py
 |-- data_processing/
 |   `-- data_processor.py
 |-- training/
+|   |-- trainer.py
 |   |-- pretraining.py
 |   `-- domain_adaptation.py
 |-- inference/
@@ -479,34 +634,72 @@ FloodForecaster/
 |-- tests/
 |   |-- data/
 |   `-- model_fixtures.py
+|-- smoke_data/
+|   `-- source/
+|-- run_short_training.cmd
+|-- run_short_training.ps1
 |-- train.py
 |-- inference.py
 `-- README.md
 ```
 
 Collected FloodForecaster pytest coverage lives in
-`test/models/test_flood_forecaster.py`; the example-local `tests/` package holds
-only reusable fixtures and reference artifacts.
+`test/models/test_flood_forecaster.py`; the example-local `tests/` package holds only
+reusable fixtures and reference artifacts.
+
+## Testing and Smoke Validation
+
+Run the unified test module from the PhysicsNeMo repository root:
+
+```bash
+python -m pytest test/models/test_flood_forecaster.py -q
+```
+
+The committed `smoke_data/source` directory is a small loader and pipeline fixture. A
+clean checkout does not include a scientifically distinct target or rollout fixture. To
+use `config_smoke.yaml`, override `target_data.root` and `rollout_data.root`; reusing
+the source fixture for both is acceptable only for a mechanical execution check, not for
+evaluating domain adaptation or forecast skill. `run_short_training.cmd` and
+`run_short_training.ps1` are local Windows helpers and their external target paths must
+be adapted before use elsewhere.
 
 ## Notes
 
-- GINO batching assumes shared geometry within a batch. If geometry varies across samples, use `batch_size: 1`.
-- Large meshes can still be GPU-memory bound by the GINO forward pass even after the data-loading refactor.
-- Mixed precision may be disabled automatically for unsupported latent-grid shapes.
-- Training and adaptation are one-step supervised stages; autoregressive state updates happen only in [inference/rollout.py](inference/rollout.py), not in the trainer.
-- The shipped rollout is autoregressive in the flood state but uses observed future boundary forcing from the dataset.
+- GINO batching assumes shared geometry within a batch. If geometry varies across
+  samples, use `batch_size: 1`.
+- Large meshes can still be GPU-memory bound by the GINO forward pass even after the
+  data-loading refactor.
+- Decreasing query-grid resolution or GNO radius changes the operator discretization and
+  should be treated as a model change when comparing results.
+- Training and adaptation are one-step supervised stages; autoregressive state updates
+  happen only in [inference/rollout.py](inference/rollout.py), not in the trainer.
+- The shipped rollout is autoregressive in the flood state but uses observed future
+  boundary forcing from the dataset.
 
 ## Citation
 
-If you use FloodForecaster in your research, please cite:
-
-The reusable HEC-RAS project dataset is available at
-[https://doi.org/10.5281/zenodo.21631205](https://doi.org/10.5281/zenodo.21631205).
+If you use FloodForecaster and the published HEC-RAS projects, cite both the dataset and
+the paper:
 
 ```bibtex
+@dataset{taghizadeh2026floodforecaster_hecras,
+  title     = {FloodForecaster HEC-RAS Projects},
+  author    = {Taghizadeh, Mehdi and Zandsalimi, Zanko and
+               Nabian, Mohammad Amin and Goodall, Jonathan L. and
+               Alemazkoor, Negin},
+  publisher = {Zenodo},
+  year      = {2026},
+  version   = {1.0.0},
+  doi       = {10.5281/zenodo.21631205},
+  url       = {https://doi.org/10.5281/zenodo.21631205}
+}
+
 @article{taghizadeh2025floodforecaster,
-  title     = {FloodForecaster: A domain-adaptive geometry-informed neural operator framework for rapid flood forecasting},
-  author    = {Taghizadeh, Mehdi and Zandsalimi, Zanko and Nabian, Mohammad Amin and Goodall, Jonathan L. and Alemazkoor, Negin},
+  title     = {FloodForecaster: A domain-adaptive geometry-informed neural
+               operator framework for rapid flood forecasting},
+  author    = {Taghizadeh, Mehdi and Zandsalimi, Zanko and
+               Nabian, Mohammad Amin and Goodall, Jonathan L. and
+               Alemazkoor, Negin},
   journal   = {Journal of Hydrology},
   volume    = {664},
   pages     = {134512},
