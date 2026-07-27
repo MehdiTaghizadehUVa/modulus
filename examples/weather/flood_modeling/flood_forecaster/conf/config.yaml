@@ -34,7 +34,8 @@ distributed:
 
 # Data loading and cache backend
 data_io:
-  backend: "auto"  # Options: "auto", "hdf5", "raw_txt"
+  backend: "auto"  # Options: "auto", "native_hdf5", "hdf5", "raw_txt"
+  native_hdf5_file_name: "flood_forecaster.h5"  # Direct dataset under each data root
   cache_dir_name: ".flood_cache"  # Per-root cache directory for shared dataset artifacts
   rebuild_cache: false  # Force rebuilding the HDF5 cache even if manifest validation succeeds
   cache_wait_timeout_seconds: 7200  # Maximum wait for a first-time distributed cache build

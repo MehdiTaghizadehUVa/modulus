@@ -85,6 +85,9 @@ def recreate_normalizers_from_source_split(
             getattr(data_io_cfg, "cache_wait_timeout_seconds", 7200.0)
         ),
         stale_lock_seconds=float(getattr(data_io_cfg, "stale_lock_seconds", 300.0)),
+        native_hdf5_file_name=getattr(
+            data_io_cfg, "native_hdf5_file_name", "flood_forecaster.h5"
+        ),
         expected_in_channels=getattr(
             getattr(cfg, "model", {}), "data_channels", None
         ),
@@ -288,6 +291,9 @@ def run_inference(cfg: DictConfig) -> None:
             stale_lock_seconds=float(
                 getattr(data_io_cfg, "stale_lock_seconds", 300.0)
             ),
+            native_hdf5_file_name=getattr(
+                data_io_cfg, "native_hdf5_file_name", "flood_forecaster.h5"
+            ),
             expected_in_channels=getattr(
                 getattr(cfg, "model", {}), "data_channels", None
             ),
@@ -329,4 +335,3 @@ def run_inference(cfg: DictConfig) -> None:
 
 if __name__ == "__main__":
     run_inference()
-

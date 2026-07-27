@@ -64,11 +64,30 @@ Utilities for synthetic hydrograph generation and HEC-RAS automation live in the
 
 - [FloodForecaster data generation repository](https://github.com/MehdiTaghizadehUVa/FloodForecaster)
 
-That repository is for generating data. This example expects pre-generated flood runs in the layout described below.
+That repository writes the native HDF5 dataset consumed directly by this example.
 
 ## Dataset Layout
 
-FloodForecaster expects one directory per domain split, with shared geometry/static files plus per-run time-series files.
+The recommended layout is one `flood_forecaster.h5` file under each configured
+domain root. The file stores shared tensors once and groups time series by run:
+
+| HDF5 path | Shape | Meaning |
+| --- | --- | --- |
+| `/geometry` | `(N, 2)` | Unit-box GINO geometry |
+| `/static` | `(N, C_static)` | Ordered static model features |
+| `/cell_area` | `(N,)` | Optional cell area |
+| `/runs/<run_id>/dynamic` | `(T, N, 3)` | State channels `[WD, VX, VY]` |
+| `/runs/<run_id>/boundary` | `(T, 1)` | Compact inflow boundary |
+| `/splits/train`, `/splits/test` | `(R,)` strings | Run IDs for each dataset split |
+
+`data_io.backend=auto` detects this file and reads it directly. No feature text
+files, run-list text files, cache manifest, or first-run cache build are needed.
+
+### Legacy Text Layout
+
+The text backend remains supported for existing datasets. It expects one
+directory per domain split, with shared geometry/static files plus per-run
+time-series files.
 
 ### Shared Mesh and Static Files
 
@@ -236,11 +255,12 @@ The dataset stack lives under `datasets/`:
 - [flood_dataset.py](datasets/flood_dataset.py): one-step training/validation dataset
 - [rollout_dataset.py](datasets/rollout_dataset.py): full-sequence rollout dataset
 - [normalized_dataset.py](datasets/normalized_dataset.py): lazy and eager normalization wrappers
-- [cache_backend.py](datasets/cache_backend.py): shared raw-text/HDF5 backend
+- [cache_backend.py](datasets/cache_backend.py): native HDF5, cached text, and raw-text backends
 
 Current runtime behavior:
 
-- raw text is cached into `<data_root>/.flood_cache/flood_forecaster_v1.h5`
+- native `<data_root>/flood_forecaster.h5` files are read directly
+- legacy raw text is cached into `<data_root>/.flood_cache/flood_forecaster_v1.h5`
 - a manifest tracks cache invalidation via file size/mtime and dataset metadata
 - cache creation validates required variables, file dimensions, finite values, and the derived model input-channel count before training starts
 - geometry and static tensors stay resident
@@ -277,6 +297,7 @@ The top-level `data_io` config block controls caching:
 ```yaml
 data_io:
   backend: auto
+  native_hdf5_file_name: flood_forecaster.h5
   cache_dir_name: .flood_cache
   rebuild_cache: false
   cache_wait_timeout_seconds: 7200
@@ -286,7 +307,11 @@ data_io:
   active_run_pool_size: null
 ```
 
-`backend=auto` selects the HDF5 cache path when `h5py` is installed, otherwise it uses `raw_txt`. Set `backend=raw_txt` explicitly to bypass the cache for debugging or parity checks.
+`backend=auto` prefers the native HDF5 file when it exists. Otherwise it builds
+the legacy HDF5 cache when `h5py` is installed, falling back to `raw_txt` only
+when HDF5 is unavailable. Use `backend=native_hdf5` to require the direct file,
+`backend=hdf5` to require text-to-cache conversion, or `backend=raw_txt` for
+debugging and parity checks.
 
 For a first-time distributed build, rank zero alone parses and writes the HDF5
 cache. Other ranks monitor the rank-zero heartbeat, then join a short distributed

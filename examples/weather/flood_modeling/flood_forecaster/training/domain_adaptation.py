@@ -985,6 +985,9 @@ def adapt_model(
             stale_lock_seconds=float(
                 getattr(data_io_cfg, "stale_lock_seconds", 300.0)
             ),
+            native_hdf5_file_name=getattr(
+                data_io_cfg, "native_hdf5_file_name", "flood_forecaster.h5"
+            ),
             expected_in_channels=getattr(
                 getattr(config, "model", {}), "data_channels", None
             ),

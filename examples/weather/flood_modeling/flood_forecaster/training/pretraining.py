@@ -182,6 +182,9 @@ def pretrain_model(config, device, is_logger, source_data_config, logger=None):
             getattr(data_io_cfg, "cache_wait_timeout_seconds", 7200.0)
         ),
         stale_lock_seconds=float(getattr(data_io_cfg, "stale_lock_seconds", 300.0)),
+        native_hdf5_file_name=getattr(
+            data_io_cfg, "native_hdf5_file_name", "flood_forecaster.h5"
+        ),
         expected_in_channels=getattr(
             getattr(config, "model", {}), "data_channels", None
         ),

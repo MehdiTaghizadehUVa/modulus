@@ -44,6 +44,9 @@ except ImportError:  # pragma: no cover - h5py is an explicit dependency for the
 
 SCHEMA_VERSION = 2
 CACHE_FILE_NAME = "flood_forecaster_v1.h5"
+NATIVE_HDF5_FILE_NAME = "flood_forecaster.h5"
+NATIVE_HDF5_FORMAT = "FloodForecaster"
+NATIVE_HDF5_FORMAT_VERSION = 1
 MANIFEST_FILE_NAME = "manifest.json"
 BUILD_STATUS_FILE_NAME = ".build.status.json"
 CACHE_LOCK_TIMEOUT_SECONDS = 7200.0
@@ -813,6 +816,184 @@ def _resolve_boundary_keys(boundary_patterns: Dict[str, str]) -> List[str]:
     return keys
 
 
+def _decode_hdf5_strings(values: Any) -> List[str]:
+    decoded = []
+    for value in np.atleast_1d(values).tolist():
+        decoded.append(value.decode("utf-8") if isinstance(value, bytes) else str(value))
+    return decoded
+
+
+def _inspect_native_hdf5(
+    native_path: Path,
+    *,
+    list_file_name: str,
+    static_files: List[str],
+    dynamic_patterns: Dict[str, str],
+    boundary_patterns: Dict[str, str],
+) -> Dict[str, Any]:
+    r"""Validate a native FloodForecaster HDF5 file and build its manifest."""
+    if h5py is None:
+        raise ImportError("h5py is required to load native FloodForecaster HDF5 data.")
+    if not native_path.exists():
+        raise FileNotFoundError(f"Native FloodForecaster HDF5 file not found: {native_path}")
+
+    split_name = Path(list_file_name).stem
+    with h5py.File(native_path, "r") as dataset:
+        file_format = dataset.attrs.get("format")
+        if isinstance(file_format, bytes):
+            file_format = file_format.decode("utf-8")
+        if file_format != NATIVE_HDF5_FORMAT:
+            raise ValueError(
+                f"Expected native format {NATIVE_HDF5_FORMAT!r} in {native_path}; "
+                f"got {file_format!r}."
+            )
+        if int(dataset.attrs.get("format_version", -1)) != NATIVE_HDF5_FORMAT_VERSION:
+            raise ValueError(
+                f"Unsupported native FloodForecaster HDF5 version in {native_path}."
+            )
+        transform = dataset.attrs.get("geometry_transform")
+        if isinstance(transform, bytes):
+            transform = transform.decode("utf-8")
+        if transform != "unit_box":
+            raise ValueError(
+                f"Native geometry in {native_path} must use the 'unit_box' transform."
+            )
+
+        for required_name in ("geometry", "static", "runs", "splits"):
+            if required_name not in dataset:
+                raise KeyError(
+                    f"Native FloodForecaster HDF5 file is missing {required_name!r}: "
+                    f"{native_path}"
+                )
+        geometry = np.asarray(dataset["geometry"], dtype=np.float32)
+        static = np.asarray(dataset["static"], dtype=np.float32)
+        if geometry.ndim != 2 or geometry.shape[1] != 2 or geometry.shape[0] == 0:
+            raise ValueError(
+                f"Native geometry must have shape (N, 2); got {geometry.shape}."
+            )
+        if static.ndim != 2 or static.shape[0] != geometry.shape[0]:
+            raise ValueError(
+                "Native static features must have shape (N, C_static) with the "
+                f"same N as geometry; got {static.shape}."
+            )
+        _require_finite(geometry, native_path)
+        _require_finite(static, native_path)
+
+        static_feature_names = _decode_hdf5_strings(
+            dataset.attrs.get("static_feature_names", [])
+        )
+        dynamic_keys = _decode_hdf5_strings(dataset.attrs.get("dynamic_keys", []))
+        boundary_keys = _decode_hdf5_strings(dataset.attrs.get("boundary_keys", []))
+        if dynamic_keys != list(REQUIRED_DYNAMIC_KEYS):
+            raise ValueError(
+                "Native FloodForecaster dynamic_keys must be ordered as "
+                f"{list(REQUIRED_DYNAMIC_KEYS)}; got {dynamic_keys}."
+            )
+        if boundary_keys != list(REQUIRED_BOUNDARY_KEYS):
+            raise ValueError(
+                "Native FloodForecaster boundary_keys must be ordered as "
+                f"{list(REQUIRED_BOUNDARY_KEYS)}; got {boundary_keys}."
+            )
+        if static_files and static_feature_names != static_files:
+            raise ValueError(
+                "Native FloodForecaster static feature order does not match config: "
+                f"file={static_feature_names}, config={static_files}."
+            )
+        expected_dynamic_keys = _resolve_dynamic_keys(dynamic_patterns)
+        expected_boundary_keys = _resolve_boundary_keys(boundary_patterns)
+        if expected_dynamic_keys and expected_dynamic_keys != dynamic_keys:
+            raise ValueError(
+                f"Native dynamic keys {dynamic_keys} do not match config "
+                f"{expected_dynamic_keys}."
+            )
+        if expected_boundary_keys and expected_boundary_keys != boundary_keys:
+            raise ValueError(
+                f"Native boundary keys {boundary_keys} do not match config "
+                f"{expected_boundary_keys}."
+            )
+
+        splits = dataset["splits"]
+        if split_name not in splits:
+            raise KeyError(
+                f"Native FloodForecaster HDF5 file has no split {split_name!r}: "
+                f"{native_path}"
+            )
+        run_ids = splits[split_name].asstr()[...].tolist()
+        if not run_ids:
+            raise ValueError(f"Native split {split_name!r} contains no run IDs.")
+        if len(set(run_ids)) != len(run_ids):
+            raise ValueError(f"Native split {split_name!r} contains duplicate run IDs.")
+
+        runs = dataset["runs"]
+        run_metadata: Dict[str, Dict[str, Any]] = {}
+        for run_id in run_ids:
+            if run_id not in runs:
+                raise KeyError(
+                    f"Native split {split_name!r} references missing run {run_id!r}."
+                )
+            run_group = runs[run_id]
+            if "dynamic" not in run_group or "boundary" not in run_group:
+                raise KeyError(f"Native run {run_id!r} is missing dynamic or boundary data.")
+            dynamic_shape = run_group["dynamic"].shape
+            boundary_shape = run_group["boundary"].shape
+            if (
+                len(dynamic_shape) != 3
+                or dynamic_shape[1] != geometry.shape[0]
+                or dynamic_shape[2] != len(dynamic_keys)
+            ):
+                raise ValueError(
+                    f"Native run {run_id!r} dynamic data must have shape "
+                    f"(T, {geometry.shape[0]}, {len(dynamic_keys)}); got {dynamic_shape}."
+                )
+            if (
+                len(boundary_shape) != 2
+                or boundary_shape[0] != dynamic_shape[0]
+                or boundary_shape[1] != len(boundary_keys)
+            ):
+                raise ValueError(
+                    f"Native run {run_id!r} boundary data must have shape "
+                    f"({dynamic_shape[0]}, {len(boundary_keys)}); got {boundary_shape}."
+                )
+            sequence_length = int(dynamic_shape[0])
+            run_metadata[run_id] = {
+                "available_dynamic_keys": dynamic_keys,
+                "available_boundary_keys": boundary_keys,
+                "dynamic_length": sequence_length,
+                "boundary_length": sequence_length,
+                "sequence_length": sequence_length,
+            }
+
+        has_cell_area = "cell_area" in dataset
+        if has_cell_area and dataset["cell_area"].shape != (geometry.shape[0],):
+            raise ValueError(
+                f"Native cell_area must have shape ({geometry.shape[0]},); "
+                f"got {dataset['cell_area'].shape}."
+            )
+
+    return {
+        "schema_version": NATIVE_HDF5_FORMAT_VERSION,
+        "data_root": str(native_path.resolve()),
+        "list_file_name": list_file_name,
+        "run_ids": run_ids,
+        "sequence_lengths": {
+            run_id: metadata["sequence_length"]
+            for run_id, metadata in run_metadata.items()
+        },
+        "reference_cell_count": int(geometry.shape[0]),
+        "static_feature_names": static_feature_names,
+        "requested_static_files": static_feature_names,
+        "dynamic_keys": dynamic_keys,
+        "boundary_keys": boundary_keys,
+        "dynamic_patterns": {},
+        "boundary_patterns": {},
+        "files": {},
+        "run_metadata": run_metadata,
+        "has_cell_area": has_cell_area,
+        "cache_file_name": native_path.name,
+        "native_hdf5": True,
+    }
+
+
 def validate_feature_channel_contract(
     static_tensor: torch.Tensor,
     *,
@@ -1162,7 +1343,7 @@ def prepare_flood_cache(
 
 
 class HDF5RunStore:
-    r"""Run-backed accessor for HDF5 cached FloodForecaster data."""
+    r"""Run-backed accessor for native or cached FloodForecaster HDF5 data."""
 
     def __init__(self, cache_path, manifest: Dict[str, Any]):
         if h5py is None:
@@ -1177,6 +1358,12 @@ class HDF5RunStore:
         state["_file"] = None
         state["_pid"] = None
         return state
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _ensure_open(self):
         current_pid = os.getpid()
@@ -1204,10 +1391,13 @@ class HDF5RunStore:
     def load_run(self, run_id: str) -> Dict[str, torch.Tensor]:
         h5_file = self._ensure_open()
         group = h5_file["runs"][run_id]
-        return {
-            "dynamic": torch.from_numpy(group["dynamic"][...].copy()).float(),
-            "boundary": torch.from_numpy(group["boundary"][...].copy()).float(),
-        }
+        dynamic = torch.from_numpy(group["dynamic"][...].copy()).float()
+        boundary = torch.from_numpy(group["boundary"][...].copy()).float()
+        if not torch.isfinite(dynamic).all():
+            raise ValueError(f"Run {run_id!r} contains non-finite dynamic values.")
+        if not torch.isfinite(boundary).all():
+            raise ValueError(f"Run {run_id!r} contains non-finite boundary values.")
+        return {"dynamic": dynamic, "boundary": boundary}
 
 
 class RawTextRunStore:
@@ -1338,6 +1528,7 @@ def create_run_store(
     rebuild_cache: bool = False,
     cache_wait_timeout_seconds: float = CACHE_LOCK_TIMEOUT_SECONDS,
     stale_lock_seconds: float = CACHE_LOCK_STALE_SECONDS,
+    native_hdf5_file_name: str = NATIVE_HDF5_FILE_NAME,
 ) -> Tuple[Any, Dict[str, Any], torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
     r"""Create a run store plus dataset metadata for the requested backend."""
 
@@ -1345,9 +1536,28 @@ def create_run_store(
     dynamic_patterns = dict(dynamic_patterns or {})
     boundary_patterns = dict(boundary_patterns or {})
 
+    data_root = Path(data_root)
+    if Path(native_hdf5_file_name).name != native_hdf5_file_name:
+        raise ValueError("native_hdf5_file_name must not contain directory components.")
+    native_path = data_root / native_hdf5_file_name
     normalized_backend = str(backend).lower()
     if normalized_backend == "auto":
-        normalized_backend = "hdf5" if h5py is not None else "raw_txt"
+        if h5py is not None and native_path.exists():
+            normalized_backend = "native_hdf5"
+        else:
+            normalized_backend = "hdf5" if h5py is not None else "raw_txt"
+
+    if normalized_backend == "native_hdf5":
+        manifest = _inspect_native_hdf5(
+            native_path,
+            list_file_name=list_file_name,
+            static_files=static_files,
+            dynamic_patterns=dynamic_patterns,
+            boundary_patterns=boundary_patterns,
+        )
+        store = HDF5RunStore(native_path, manifest)
+        geometry, static, cell_area = store.load_shared_tensors()
+        return store, manifest, geometry, static, cell_area
 
     if normalized_backend == "hdf5":
         manifest = prepare_flood_cache(

@@ -27,6 +27,7 @@ import time
 import types
 from unittest.mock import MagicMock
 
+import h5py
 from neuralop import get_model
 from neuralop.losses import LpLoss
 import numpy as np
@@ -475,6 +476,46 @@ def _make_rollout_root(tmp_path: Path) -> Path:
     shutil.copy2(rollout_root / "train.txt", rollout_root / "test.txt")
     return rollout_root
 
+
+def _write_native_hdf5_fixture(root: Path, split_files: tuple[str, ...]) -> Path:
+    manifest = prepare_flood_cache(
+        root,
+        list_file_name=split_files[0],
+        xy_file="M40_XY.txt",
+        static_files=STATIC_FILES,
+        dynamic_patterns=DYNAMIC_PATTERNS,
+        boundary_patterns=BOUNDARY_PATTERNS,
+        rebuild=False,
+    )
+    cache_path = root / ".flood_cache" / "flood_forecaster_v1.h5"
+    native_path = root / "flood_forecaster.h5"
+    shutil.copy2(cache_path, native_path)
+    with h5py.File(native_path, "r+") as dataset:
+        dataset.attrs["format"] = "FloodForecaster"
+        dataset.attrs["format_version"] = 1
+        dataset.attrs["geometry_transform"] = "unit_box"
+        dataset.attrs["dynamic_keys"] = np.asarray(
+            manifest["dynamic_keys"], dtype=h5py.string_dtype("utf-8")
+        )
+        dataset.attrs["boundary_keys"] = np.asarray(
+            manifest["boundary_keys"], dtype=h5py.string_dtype("utf-8")
+        )
+        dataset.attrs["static_feature_names"] = np.asarray(
+            manifest["static_feature_names"], dtype=h5py.string_dtype("utf-8")
+        )
+        splits = dataset.require_group("splits")
+        for list_file_name in split_files:
+            run_ids = [
+                line.strip()
+                for line in (root / list_file_name).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            splits.create_dataset(
+                Path(list_file_name).stem,
+                data=np.asarray(run_ids, dtype=h5py.string_dtype("utf-8")),
+            )
+    return native_path
+
 def _build_train_dataset(
     root: Path,
     *,
@@ -632,6 +673,77 @@ def test_cache_build_and_reuse(tmp_path):
     assert manifest == reused_manifest
     assert cache_path.stat().st_mtime_ns == original_mtime
     assert json.loads(manifest_path.read_text(encoding="utf-8")) == original_manifest
+
+
+def test_auto_backend_reads_native_hdf5_without_raw_text_or_cache(tmp_path):
+    root = _make_source_root(tmp_path)
+    raw_dataset = _build_train_dataset(root, backend="raw_txt")
+    expected = raw_dataset[0]
+    native_path = _write_native_hdf5_fixture(root, ("train.txt",))
+
+    shutil.rmtree(root / ".flood_cache")
+    for text_path in root.glob("*.txt"):
+        text_path.unlink()
+
+    native_dataset = _build_train_dataset(root, backend="auto")
+    actual = native_dataset[0]
+
+    assert native_dataset.run_store.cache_path == native_path
+    assert not (root / ".flood_cache").exists()
+    assert actual["run_id"] == expected["run_id"]
+    assert actual["time_index"] == expected["time_index"]
+    for key in ("geometry", "static", "boundary", "dynamic", "target"):
+        torch.testing.assert_close(actual[key], expected[key])
+    native_dataset.run_store.close()
+    assert native_dataset.run_store._file is None
+
+
+def test_native_hdf5_rollout_uses_embedded_test_split(tmp_path):
+    root = _make_rollout_root(tmp_path)
+    native_path = _write_native_hdf5_fixture(root, ("train.txt", "test.txt"))
+    shutil.rmtree(root / ".flood_cache")
+    for text_path in root.glob("*.txt"):
+        text_path.unlink()
+
+    rollout_dataset = _build_rollout_dataset(root, backend="native_hdf5")
+
+    assert rollout_dataset.run_store.cache_path == native_path
+    assert rollout_dataset.valid_run_ids == ["H1"]
+    sample = rollout_dataset[0]
+    assert sample["dynamic"].ndim == 3
+    assert sample["dynamic"].shape[-1] == 3
+    assert sample["boundary"].shape == (sample["dynamic"].shape[0], 1)
+
+
+def test_native_hdf5_rejects_malformed_run_shape(tmp_path):
+    root = _make_source_root(tmp_path)
+    native_path = _write_native_hdf5_fixture(root, ("train.txt",))
+    with h5py.File(native_path, "r+") as dataset:
+        run = dataset["runs/H1"]
+        del run["dynamic"]
+        run.create_dataset("dynamic", data=np.zeros((8, 2, 2), dtype=np.float32))
+
+    with pytest.raises(ValueError, match="dynamic data must have shape"):
+        _build_train_dataset(root, backend="native_hdf5")
+
+
+def test_native_hdf5_rejects_missing_requested_split(tmp_path):
+    root = _make_rollout_root(tmp_path)
+    _write_native_hdf5_fixture(root, ("train.txt",))
+
+    with pytest.raises(KeyError, match="no split 'test'"):
+        _build_rollout_dataset(root, backend="native_hdf5")
+
+
+def test_native_hdf5_rejects_nonfinite_values_when_run_is_loaded(tmp_path):
+    root = _make_source_root(tmp_path)
+    native_path = _write_native_hdf5_fixture(root, ("train.txt",))
+    with h5py.File(native_path, "r+") as dataset:
+        dataset["runs/H1/dynamic"][0, 0, 0] = np.nan
+
+    native_dataset = _build_train_dataset(root, backend="native_hdf5")
+    with pytest.raises(ValueError, match="non-finite dynamic"):
+        native_dataset[0]
 
 
 def test_cache_rejects_missing_required_feature_file(tmp_path):
@@ -1492,6 +1604,8 @@ def test_domain_adaptation_weight_config_defaults():
     assert short_cfg.training.da_class_loss_weight == pytest.approx(0.0)
     assert smoke_cfg.training.da_class_loss_weight == pytest.approx(0.0)
     assert smoke_cfg.source_data.rollout_length == 4
+    assert base_cfg.data_io.backend == "auto"
+    assert base_cfg.data_io.native_hdf5_file_name == "flood_forecaster.h5"
     assert base_cfg.data_io.run_aware_sampling is True
     assert base_cfg.data_io.active_run_pool_size is None
     assert base_cfg.data_io.run_cache_size == 4

@@ -27,6 +27,7 @@ from torch.utils.data import Dataset
 from .cache_backend import (
     CACHE_LOCK_STALE_SECONDS,
     CACHE_LOCK_TIMEOUT_SECONDS,
+    NATIVE_HDF5_FILE_NAME,
     create_run_store,
     validate_feature_channel_contract,
 )
@@ -55,6 +56,7 @@ class FloodRolloutTestDatasetNew(Dataset):
         cache_wait_timeout_seconds=CACHE_LOCK_TIMEOUT_SECONDS,
         stale_lock_seconds=CACHE_LOCK_STALE_SECONDS,
         expected_in_channels=None,
+        native_hdf5_file_name=NATIVE_HDF5_FILE_NAME,
     ):
         super().__init__()
         self.data_root = Path(rollout_data_root)
@@ -78,6 +80,7 @@ class FloodRolloutTestDatasetNew(Dataset):
         self.cache_wait_timeout_seconds = float(cache_wait_timeout_seconds)
         self.stale_lock_seconds = float(stale_lock_seconds)
         self.expected_in_channels = expected_in_channels
+        self.native_hdf5_file_name = native_hdf5_file_name
 
         (
             self.run_store,
@@ -98,6 +101,7 @@ class FloodRolloutTestDatasetNew(Dataset):
             rebuild_cache=self.rebuild_cache,
             cache_wait_timeout_seconds=self.cache_wait_timeout_seconds,
             stale_lock_seconds=self.stale_lock_seconds,
+            native_hdf5_file_name=self.native_hdf5_file_name,
         )
 
         self.run_ids = list(self.manifest.get("run_ids", []))
