@@ -66,6 +66,9 @@ Utilities for synthetic hydrograph generation and HEC-RAS automation live in the
 
 That repository writes the native HDF5 dataset consumed directly by this example.
 
+The HEC-RAS source and target-domain projects used to generate the study data are
+archived on Zenodo: [FloodForecaster HEC-RAS Projects](https://doi.org/10.5281/zenodo.21631205).
+
 ## Dataset Layout
 
 The recommended layout is one `flood_forecaster.h5` file under each configured
@@ -496,6 +499,9 @@ only reusable fixtures and reference artifacts.
 ## Citation
 
 If you use FloodForecaster in your research, please cite:
+
+The reusable HEC-RAS project dataset is available at
+[https://doi.org/10.5281/zenodo.21631205](https://doi.org/10.5281/zenodo.21631205).
 
 ```bibtex
 @article{taghizadeh2025floodforecaster,
